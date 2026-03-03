@@ -3,6 +3,8 @@ defineProps({
   view: { type: String, required: true },
   serverMessages: { type: Array, required: true },
   dmMessages: { type: Array, required: true },
+  serverChannelName: { type: String, required: true },
+  dmTitle: { type: String, required: true },
 })
 </script>
 
@@ -13,7 +15,7 @@ defineProps({
         <span class="channel-title__hash">
           {{ view === "server" ? "#" : "DM" }}
         </span>
-        <span>{{ view === "server" ? "general" : "Direct Message" }}</span>
+        <span>{{ view === "server" ? serverChannelName : dmTitle }}</span>
       </div>
       <div class="header__actions">
         <button class="icon-btn">CALL</button>
@@ -26,9 +28,9 @@ defineProps({
 
     <section class="chat">
       <div class="chat__intro">
-        <div class="chat__badge">February 9, 2026</div>
+        <div class="chat__badge">{{ new Date().toLocaleDateString() }}</div>
         <h1 class="chat__title">
-          {{ view === "server" ? "general" : "Direct Messages" }}
+          {{ view === "server" ? serverChannelName : dmTitle }}
         </h1>
         <p class="chat__subtitle">This is the start of your conversation.</p>
       </div>
@@ -55,7 +57,9 @@ defineProps({
       <input
         class="composer__input"
         type="text"
-        :placeholder="view === 'server' ? 'Message #general' : 'Message Direct Messages'"
+        :placeholder="
+          view === 'server' ? `Message #${serverChannelName}` : `Message ${dmTitle}`
+        "
       />
       <div class="composer__actions">
         <button class="icon-btn">GIF</button>

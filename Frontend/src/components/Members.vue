@@ -9,7 +9,11 @@ defineProps({
 <template>
   <aside class="members">
     <div class="members__header">
-      {{ view === "server" ? "Members - 9" : "Members - 3" }}
+      {{
+        view === "server"
+          ? `Members - ${serverMembers.length}`
+          : `Members - ${dmMembers.length}`
+      }}
     </div>
     <div
       v-for="m in view === 'server' ? serverMembers : dmMembers"

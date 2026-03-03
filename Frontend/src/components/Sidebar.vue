@@ -3,6 +3,9 @@ defineProps({
   view: { type: String, required: true },
   serverChannels: { type: Array, required: true },
   dmList: { type: Array, required: true },
+  activeGuildName: { type: String, required: true },
+  currentUser: { type: Object, required: true },
+  serverChannelName: { type: String, required: true },
 })
 </script>
 
@@ -11,10 +14,14 @@ defineProps({
     <div class="sidebar__header">
       <div class="guild">
         <div class="guild__name">
-          {{ view === "server" ? "Server Name" : "Direct Messages" }}
+          {{ view === "server" ? activeGuildName : "Direct Messages" }}
         </div>
         <div class="guild__meta">
-          {{ view === "server" ? "GENERAL" : "Find or start a conversation..." }}
+          {{
+            view === "server"
+              ? serverChannelName.toUpperCase()
+              : "Find or start a conversation..."
+          }}
         </div>
       </div>
       <button class="icon-btn">+</button>
@@ -54,10 +61,10 @@ defineProps({
 
     <div class="sidebar__footer">
       <div class="user">
-        <div class="user__avatar">A</div>
+        <div class="user__avatar">{{ currentUser.username[0] }}</div>
         <div class="user__info">
-          <div class="user__name">andri</div>
-          <div class="user__tag">@andri</div>
+          <div class="user__name">{{ currentUser.username }}</div>
+          <div class="user__tag">{{ currentUser.tag }}</div>
         </div>
       </div>
       <div class="user__actions">

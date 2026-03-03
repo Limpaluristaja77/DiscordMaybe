@@ -1,0 +1,170 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String        @id @default(cuid())
+  username       String        @unique
+  email          String        @unique
+  passwordHash   String
+  avatarUrl      String?
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  memberships    GuildMember[]
+  sentMessages   Message[]     @relation("MessageAuthor")
+  directMessages DirectMessage[]
+  readStates     ReadState[]
+  overwrites     PermissionOverwrite[]
+}
+
+model Guild {
+  id          String        @id @default(cuid())
+  name        String
+  iconUrl     String?
+  ownerId     String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  channels    Channel[]
+  members     GuildMember[]
+  roles       Role[]
+}
+
+model GuildMember {
+  id        String   @id @default(cuid())
+  guildId   String
+  userId    String
+  nickname  String?
+  joinedAt  DateTime @default(now())
+  guild     Guild    @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([guildId, userId])
+  @@index([guildId])
+  @@index([userId])
+}
+
+model Channel {
+  id          String                @id @default(cuid())
+  guildId     String
+  name        String
+  type        ChannelType           @default(TEXT)
+  topic       String?
+  position    Int                   @default(0)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+  guild       Guild                 @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  messages    Message[]
+  overwrites  PermissionOverwrite[]
+  readStates  ReadState[]
+
+  @@index([guildId, position])
+}
+
+model Message {
+  id          String              @id @default(cuid())
+  channelId   String
+  authorId    String
+  content     String
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+  deletedAt   DateTime?
+  channel     Channel             @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  author      User                @relation("MessageAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  attachments MessageAttachment[]
+
+  @@index([channelId, createdAt])
+  @@index([authorId])
+}
+
+model MessageAttachment {
+  id         String   @id @default(cuid())
+  messageId  String
+  url        String
+  fileName   String
+  mimeType   String?
+  sizeBytes  Int?
+  createdAt  DateTime @default(now())
+  message    Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([messageId])
+}
+
+model Role {
+  id            String                @id @default(cuid())
+  guildId       String
+  name          String
+  color         String?
+  position      Int                   @default(0)
+  permissions   BigInt                @default(0)
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+  guild         Guild                 @relation(fields: [guildId], references: [id], onDelete: Cascade)
+  overwrites    PermissionOverwrite[]
+
+  @@index([guildId, position])
+}
+
+model PermissionOverwrite {
+  id          String            @id @default(cuid())
+  channelId   String
+  roleId      String?
+  userId      String?
+  allowBits   BigInt            @default(0)
+  denyBits    BigInt            @default(0)
+  channel     Channel           @relation(fields: [channelId], references: [id], onDelete: Cascade)
+  role        Role?             @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  user        User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([channelId])
+  @@index([roleId])
+  @@index([userId])
+}
+
+model DirectMessageThread {
+  id            String          @id @default(cuid())
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  participants  DirectMessage[]
+
+  @@index([updatedAt])
+}
+
+model DirectMessage {
+  id          String              @id @default(cuid())
+  threadId    String
+  userId      String
+  createdAt   DateTime            @default(now())
+  thread      DirectMessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([threadId, userId])
+  @@index([userId])
+}
+
+model ReadState {
+  id            String   @id @default(cuid())
+  userId        String
+  channelId     String
+  lastReadAt    DateTime @default(now())
+  lastMessageId String?
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  channel       Channel  @relation(fields: [channelId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, channelId])
+  @@index([channelId])
+}
+
+enum ChannelType {
+  TEXT
+  VOICE
+  CATEGORY
+  ANNOUNCEMENT
+}
