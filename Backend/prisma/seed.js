@@ -1,6 +1,12 @@
+const crypto = require("crypto");
 const { PrismaClient } = require("@prisma/client");
 
 const prisma = new PrismaClient();
+const PASSWORD_SECRET = process.env.PASSWORD_SECRET || "discordmaybe-password-secret";
+
+function createPasswordHash(password) {
+  return crypto.scryptSync(password, PASSWORD_SECRET, 64).toString("hex");
+}
 
 async function main() {
   await prisma.messageAttachment.deleteMany();
@@ -21,7 +27,7 @@ async function main() {
         id: "u-andri",
         username: "andri",
         email: "andri@example.com",
-        passwordHash: "seed-password-hash",
+        passwordHash: createPasswordHash("andri123"),
         avatarUrl: null,
       },
     }),
@@ -30,7 +36,7 @@ async function main() {
         id: "u-luna",
         username: "luna",
         email: "luna@example.com",
-        passwordHash: "seed-password-hash",
+        passwordHash: createPasswordHash("luna123"),
       },
     }),
     prisma.user.create({
@@ -38,7 +44,7 @@ async function main() {
         id: "u-kai",
         username: "kai",
         email: "kai@example.com",
-        passwordHash: "seed-password-hash",
+        passwordHash: createPasswordHash("kai123"),
       },
     }),
     prisma.user.create({
@@ -46,7 +52,7 @@ async function main() {
         id: "u-mira",
         username: "mira",
         email: "mira@example.com",
-        passwordHash: "seed-password-hash",
+        passwordHash: createPasswordHash("mira123"),
       },
     }),
     prisma.user.create({
@@ -54,7 +60,7 @@ async function main() {
         id: "u-zen",
         username: "zen",
         email: "zen@example.com",
-        passwordHash: "seed-password-hash",
+        passwordHash: createPasswordHash("zen123"),
       },
     }),
   ]);

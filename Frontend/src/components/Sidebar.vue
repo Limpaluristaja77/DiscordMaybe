@@ -7,6 +7,8 @@ defineProps({
   currentUser: { type: Object, required: true },
   serverChannelName: { type: String, required: true },
 })
+
+const emit = defineEmits(["logout"])
 </script>
 
 <template>
@@ -68,9 +70,10 @@ defineProps({
         </div>
       </div>
       <div class="user__actions">
-        <button class="icon-btn">MIC</button>
-        <button class="icon-btn">HP</button>
-        <button class="icon-btn">SET</button>
+        <button class="icon-btn" title="Microphone">&#127897;</button>
+        <button class="icon-btn" title="Headphones">&#127911;</button>
+        <button class="icon-btn" title="Settings">&#9881;</button>
+        <button class="icon-btn" title="Logout" @click="emit('logout')">&#128682;</button>
       </div>
     </div>
   </aside>
