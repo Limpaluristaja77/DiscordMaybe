@@ -1,14 +1,23 @@
 <script setup>
 defineProps({
   view: { type: String, required: true },
+  dmSection: { type: String, required: true },
   serverChannels: { type: Array, required: true },
   dmList: { type: Array, required: true },
   activeGuildName: { type: String, required: true },
   currentUser: { type: Object, required: true },
   serverChannelName: { type: String, required: true },
+  friendCount: { type: Number, required: true },
+  requestCount: { type: Number, required: true },
 })
 
-const emit = defineEmits(["logout", "select-server-channel", "select-dm", "open-create-channel"])
+const emit = defineEmits([
+  "logout",
+  "select-server-channel",
+  "select-dm",
+  "open-create-channel",
+  "set-dm-section",
+])
 </script>
 
 <template>
@@ -22,33 +31,46 @@ const emit = defineEmits(["logout", "select-server-channel", "select-dm", "open-
           {{
             view === "server"
               ? serverChannelName.toUpperCase()
-              : "Find or start a conversation..."
+              : dmSection === "friends"
+                ? `${friendCount} friends • ${requestCount} pending`
+                : "Open a conversation with a friend"
           }}
         </div>
       </div>
       <button
         class="icon-btn"
-        :title="view === 'server' ? 'Add channel' : 'New message'"
-        @click="view === 'server' ? emit('open-create-channel') : null"
+        :title="view === 'server' ? 'Add channel' : 'Friends home'"
+        @click="view === 'server' ? emit('open-create-channel') : emit('set-dm-section', 'friends')"
       >
         +
       </button>
     </div>
 
     <div v-if="view === 'dm'" class="sidebar__section">
-      <button class="sidebar__pill">Find or start a conversation...</button>
-      <div class="dm-shortcuts">
-        <button class="dm-shortcuts__item">Friends</button>
-        <button class="dm-shortcuts__item">Nitro</button>
-        <button class="dm-shortcuts__item">Shop</button>
-        <button class="dm-shortcuts__item">Quests</button>
+      <div class="dm-shortcuts dm-shortcuts--tabs">
+        <button
+          class="dm-shortcuts__item"
+          :class="{ active: dmSection === 'friends' }"
+          @click="emit('set-dm-section', 'friends')"
+        >
+          Friends
+          <span v-if="requestCount" class="sidebar__count">{{ requestCount }}</span>
+        </button>
+        <button
+          class="dm-shortcuts__item"
+          :class="{ active: dmSection === 'messages' }"
+          @click="emit('set-dm-section', 'messages')"
+        >
+          Messages
+          <span v-if="dmList.length" class="sidebar__count">{{ dmList.length }}</span>
+        </button>
       </div>
       <div class="section__title">Direct Messages</div>
       <button
         v-for="dm in dmList"
         :key="dm.id"
         class="dm-row"
-        :class="{ active: dm.active }"
+        :class="{ active: dm.active && dmSection === 'messages' }"
         @click="emit('select-dm', dm.id)"
       >
         <span class="dm-row__avatar">{{ dm.name[0] }}</span>
@@ -57,6 +79,9 @@ const emit = defineEmits(["logout", "select-server-channel", "select-dm", "open-
           <span class="dm-row__sub">{{ dm.subtitle }}</span>
         </span>
       </button>
+      <div v-if="!dmList.length" class="sidebar__empty">
+        Accepted friends will show up here once you start a direct message.
+      </div>
     </div>
 
     <div v-else class="sidebar__section">

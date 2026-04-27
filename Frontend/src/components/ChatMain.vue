@@ -1,25 +1,64 @@
 <script setup>
-import { computed, nextTick, ref, watch } from "vue"
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 
 const draft = ref("")
+const friendUsername = ref("")
 const chatScroller = ref(null)
 const fileInput = ref(null)
+const draftInput = ref(null)
 const queuedFiles = ref([])
+const emojiPicker = ref(null)
+const isEmojiPickerOpen = ref(false)
+const emojis = [
+  0x1f600,
+  0x1f602,
+  0x1f972,
+  0x1f60d,
+  0x1f914,
+  0x1f62d,
+  0x1f60e,
+  0x1f634,
+  0x1f621,
+  0x1f44d,
+  0x1f64f,
+  0x1f44f,
+  0x1f525,
+  0x2728,
+  0x1f480,
+  0x1f49c,
+  0x2764,
+  0x1f389,
+  0x1f680,
+  0x1f63a,
+].map((codePoint) => String.fromCodePoint(codePoint))
 
 const props = defineProps({
   sendMessage: { type: Function, required: true },
+  sendFriendRequest: { type: Function, required: true },
+  acceptFriendRequest: { type: Function, required: true },
+  openDmWithFriend: { type: Function, required: true },
   view: { type: String, required: true },
+  dmSection: { type: String, required: true },
   serverMessages: { type: Array, required: true },
   dmMessages: { type: Array, required: true },
   serverChannelName: { type: String, required: true },
   dmTitle: { type: String, required: true },
+  friends: { type: Array, required: true },
+  incomingFriendRequests: { type: Array, required: true },
+  outgoingFriendRequests: { type: Array, required: true },
+  error: { type: String, default: "" },
 })
 
 const activeMessages = computed(() =>
   props.view === "server" ? props.serverMessages : props.dmMessages
 )
+const isFriendsHub = computed(() => props.view === "dm" && props.dmSection === "friends")
 
 async function scrollToBottom() {
+  if (isFriendsHub.value) {
+    return
+  }
+
   await nextTick()
   chatScroller.value?.scrollTo({
     top: chatScroller.value.scrollHeight,
@@ -41,6 +80,36 @@ function removeQueuedFile(index) {
 
   if (queuedFiles.value.length === 0 && fileInput.value) {
     fileInput.value.value = ""
+  }
+}
+
+function toggleEmojiPicker() {
+  isEmojiPickerOpen.value = !isEmojiPickerOpen.value
+}
+
+async function insertEmoji(emoji) {
+  const input = draftInput.value
+
+  if (!input) {
+    draft.value += emoji
+    isEmojiPickerOpen.value = false
+    return
+  }
+
+  const start = input.selectionStart ?? draft.value.length
+  const end = input.selectionEnd ?? draft.value.length
+  draft.value = `${draft.value.slice(0, start)}${emoji}${draft.value.slice(end)}`
+  isEmojiPickerOpen.value = false
+
+  await nextTick()
+  input.focus()
+  const cursor = start + emoji.length
+  input.setSelectionRange(cursor, cursor)
+}
+
+function handleDocumentClick(event) {
+  if (!emojiPicker.value?.contains(event.target)) {
+    isEmojiPickerOpen.value = false
   }
 }
 
@@ -83,6 +152,17 @@ async function submitMessage() {
   }
 }
 
+async function submitFriendRequest() {
+  const username = friendUsername.value.trim()
+
+  if (!username) {
+    return
+  }
+
+  await props.sendFriendRequest(username)
+  friendUsername.value = ""
+}
+
 watch(
   () => activeMessages.value.length,
   () => {
@@ -90,6 +170,21 @@ watch(
   },
   { immediate: true }
 )
+
+watch(isFriendsHub, (nextValue) => {
+  if (nextValue) {
+    draft.value = ""
+    queuedFiles.value = []
+  }
+})
+
+onMounted(() => {
+  document.addEventListener("click", handleDocumentClick)
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener("click", handleDocumentClick)
+})
 </script>
 
 <template>
@@ -97,9 +192,17 @@ watch(
     <header class="main__header">
       <div class="channel-title">
         <span class="channel-title__hash">
-          {{ view === "server" ? "#" : "DM" }}
+          {{ view === "server" ? "#" : dmSection === "friends" ? "FR" : "DM" }}
         </span>
-        <span>{{ view === "server" ? serverChannelName : dmTitle }}</span>
+        <span>
+          {{
+            view === "server"
+              ? serverChannelName
+              : dmSection === "friends"
+                ? "Friends"
+                : dmTitle
+          }}
+        </span>
       </div>
       <div class="header__actions">
         <button class="icon-btn" title="Call">&#128222;</button>
@@ -110,7 +213,102 @@ watch(
       </div>
     </header>
 
-    <section ref="chatScroller" class="chat">
+    <section v-if="isFriendsHub" class="friends-hub">
+      <div class="friends-hub__hero">
+        <div class="chat__badge">Social</div>
+        <h1 class="chat__title">Friends</h1>
+        <p class="chat__subtitle">
+          Add someone by username, accept incoming requests, and open direct messages once you are
+          friends.
+        </p>
+      </div>
+
+      <div class="friends-hub__card">
+        <div class="friends-hub__heading">Add Friend</div>
+        <div class="friends-hub__form">
+          <input
+            v-model="friendUsername"
+            class="auth-input"
+            type="text"
+            placeholder="Enter username"
+            @keydown.enter.prevent="submitFriendRequest"
+          />
+          <button class="auth-submit" @click="submitFriendRequest">Send Request</button>
+        </div>
+        <p v-if="error" class="auth-error">{{ error }}</p>
+      </div>
+
+      <div class="friends-hub__grid">
+        <section class="friends-panel">
+          <div class="friends-panel__header">
+            <h2>Friends</h2>
+            <span>{{ friends.length }}</span>
+          </div>
+          <div v-if="friends.length" class="friends-list">
+            <div v-for="friend in friends" :key="friend.id" class="friend-row">
+              <div class="friend-row__identity">
+                <div class="friend-row__avatar">{{ friend.username[0] }}</div>
+                <div>
+                  <div class="friend-row__name">{{ friend.username }}</div>
+                  <div class="friend-row__meta">{{ friend.tag }} • {{ friend.status }}</div>
+                </div>
+              </div>
+              <button class="auth-toggle__btn friend-row__action" @click="openDmWithFriend(friend.id)">
+                Message
+              </button>
+            </div>
+          </div>
+          <div v-else class="friends-panel__empty">No friends yet. Send a request to get started.</div>
+        </section>
+
+        <section class="friends-panel">
+          <div class="friends-panel__header">
+            <h2>Incoming Requests</h2>
+            <span>{{ incomingFriendRequests.length }}</span>
+          </div>
+          <div v-if="incomingFriendRequests.length" class="friends-list">
+            <div v-for="request in incomingFriendRequests" :key="request.id" class="friend-row">
+              <div class="friend-row__identity">
+                <div class="friend-row__avatar">{{ request.username[0] }}</div>
+                <div>
+                  <div class="friend-row__name">{{ request.username }}</div>
+                  <div class="friend-row__meta">{{ request.tag }}</div>
+                </div>
+              </div>
+              <button
+                class="auth-submit friend-row__action"
+                @click="acceptFriendRequest(request.id)"
+              >
+                Accept
+              </button>
+            </div>
+          </div>
+          <div v-else class="friends-panel__empty">No pending incoming requests.</div>
+        </section>
+      </div>
+
+      <section class="friends-panel">
+        <div class="friends-panel__header">
+          <h2>Outgoing Requests</h2>
+          <span>{{ outgoingFriendRequests.length }}</span>
+        </div>
+        <div v-if="outgoingFriendRequests.length" class="friends-list">
+          <div v-for="request in outgoingFriendRequests" :key="request.id" class="friend-row">
+            <div class="friend-row__identity">
+              <div class="friend-row__avatar">{{ request.username[0] }}</div>
+              <div>
+                <div class="friend-row__name">{{ request.username }}</div>
+                <div class="friend-row__meta">{{ request.tag }} • waiting for reply</div>
+              </div>
+            </div>
+            <span class="friend-row__status">Pending</span>
+          </div>
+        </div>
+        <div v-else class="friends-panel__empty">You have no outgoing friend requests.</div>
+      </section>
+    </section>
+
+    <section v-else ref="chatScroller" class="chat">
       <div class="chat__intro">
         <div class="chat__badge">{{ new Date().toLocaleDateString() }}</div>
         <h1 class="chat__title">
@@ -149,7 +347,7 @@ watch(
       </div>
     </section>
 
-    <footer class="composer">
+    <footer v-if="!isFriendsHub" class="composer">
       <input
         ref="fileInput"
         class="composer__file-input"
@@ -159,6 +357,7 @@ watch(
       />
       <button class="composer__add" title="Add files" @click="openFilePicker">+</button>
       <input
+        ref="draftInput"
         v-model="draft"
         class="composer__input"
         type="text"
@@ -179,7 +378,26 @@ watch(
           </button>
         </div>
         <button class="icon-btn" title="GIF">&#127909;</button>
-        <button class="icon-btn" title="Emoji">&#128522;</button>
+        <div ref="emojiPicker" class="emoji-picker">
+          <button
+            class="icon-btn"
+            :class="{ 'icon-btn--active': isEmojiPickerOpen }"
+            title="Emoji"
+            @click.stop="toggleEmojiPicker"
+          >
+            &#128522;
+          </button>
+          <div v-if="isEmojiPickerOpen" class="emoji-picker__panel">
+            <button
+              v-for="emoji in emojis"
+              :key="emoji"
+              class="emoji-picker__item"
+              @click.stop="insertEmoji(emoji)"
+            >
+              {{ emoji }}
+            </button>
+          </div>
+        </div>
         <button class="icon-btn" title="Gift">&#127873;</button>
         <button class="icon-btn" title="Send" @click="submitMessage">&#128228;</button>
       </div>

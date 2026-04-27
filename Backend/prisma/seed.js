@@ -11,6 +11,7 @@ function createPasswordHash(password) {
 async function main() {
   await prisma.messageAttachment.deleteMany();
   await prisma.message.deleteMany();
+  await prisma.friendRequest.deleteMany();
   await prisma.readState.deleteMany();
   await prisma.permissionOverwrite.deleteMany();
   await prisma.role.deleteMany();
@@ -137,14 +138,6 @@ async function main() {
         position: 2,
       },
     }),
-    prisma.channel.create({
-      data: {
-        id: "c-dm-luna",
-        guildId: guild.id,
-        name: "dm-luna",
-        position: 3,
-      },
-    }),
   ]);
 
   await prisma.permissionOverwrite.create({
@@ -191,10 +184,37 @@ async function main() {
     ],
   });
 
+  await prisma.friendRequest.createMany({
+    data: [
+      {
+        id: "fr-andri-luna",
+        senderId: "u-andri",
+        receiverId: "u-luna",
+        pairKey: "u-andri:u-luna",
+        status: "ACCEPTED",
+        respondedAt: new Date(),
+      },
+      {
+        id: "fr-mira-andri",
+        senderId: "u-mira",
+        receiverId: "u-andri",
+        pairKey: "u-andri:u-mira",
+        status: "PENDING",
+      },
+      {
+        id: "fr-andri-zen",
+        senderId: "u-andri",
+        receiverId: "u-zen",
+        pairKey: "u-andri:u-zen",
+        status: "PENDING",
+      },
+    ],
+  });
+
   await prisma.message.create({
     data: {
       id: "m-dm-1",
-      channelId: "c-dm-luna",
+      threadId: dmThread.id,
       authorId: "u-luna",
       content: "Pics",
       attachments: {

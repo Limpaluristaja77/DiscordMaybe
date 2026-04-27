@@ -7,6 +7,7 @@ import Members from "./components/Members.vue"
 import AuthPanel from "./components/AuthPanel.vue"
 
 const view = ref("server")
+const dmSection = ref("friends")
 const bootstrap = ref(null)
 const loading = ref(true)
 const error = ref("")
@@ -20,11 +21,14 @@ const serverMessages = computed(() => bootstrap.value?.serverMessages || [])
 const dmMessages = computed(() => bootstrap.value?.dmMessages || [])
 const serverMembers = computed(() => bootstrap.value?.serverMembers || [])
 const dmMembers = computed(() => bootstrap.value?.dmMembers || [])
+const friends = computed(() => bootstrap.value?.friends || [])
+const incomingFriendRequests = computed(() => bootstrap.value?.incomingFriendRequests || [])
+const outgoingFriendRequests = computed(() => bootstrap.value?.outgoingFriendRequests || [])
 const activeGuildId = computed(() => bootstrap.value?.activeGuildId || null)
 const activeGuildName = computed(() => bootstrap.value?.activeGuildName || "Server")
 const dmTitle = computed(() => bootstrap.value?.dmTitle || "Direct Messages")
 const activeServerChannelId = computed(() => bootstrap.value?.activeServerChannelId || null)
-const activeDmChannelId = computed(() => bootstrap.value?.activeDmChannelId || null)
+const activeDmThreadId = computed(() => bootstrap.value?.activeDmThreadId || null)
 const createServerName = ref("")
 const creatingServer = ref(false)
 const isCreateServerOpen = ref(false)
@@ -86,21 +90,22 @@ function buildBootstrapQuery(overrides = {}) {
 function clearSession() {
   token.value = ""
   bootstrap.value = null
+  dmSection.value = "friends"
   localStorage.removeItem("discordmaybe-token")
   socket.value?.disconnect()
   socket.value = null
 }
 
-function appendMessage(channelId, message) {
-  if (!bootstrap.value || !channelId || message.channelId !== channelId) {
+function appendMessage(message) {
+  if (!bootstrap.value) {
     return
   }
 
-  if (channelId === activeServerChannelId.value) {
+  if (message.channelId && message.channelId === activeServerChannelId.value) {
     bootstrap.value.serverMessages = [...bootstrap.value.serverMessages, message]
   }
 
-  if (channelId === activeDmChannelId.value) {
+  if (message.threadId && message.threadId === activeDmThreadId.value) {
     bootstrap.value.dmMessages = [...bootstrap.value.dmMessages, message]
   }
 }
@@ -114,9 +119,13 @@ async function ensureSocketClient() {
     const existingScript = document.querySelector('script[data-socket-io-client="true"]')
     if (existingScript) {
       existingScript.addEventListener("load", () => resolve(), { once: true })
-      existingScript.addEventListener("error", () => reject(new Error("Failed to load Socket.IO client")), {
-        once: true,
-      })
+      existingScript.addEventListener(
+        "error",
+        () => reject(new Error("Failed to load Socket.IO client")),
+        {
+          once: true,
+        }
+      )
       return
     }
 
@@ -151,7 +160,7 @@ async function connectRealtime() {
     })
 
     nextSocket.on("message:new", (message) => {
-      appendMessage(message.channelId, message)
+      appendMessage(message)
     })
 
     socket.value = nextSocket
@@ -169,12 +178,28 @@ async function joinActiveRooms() {
     socket.value.emit("channel:join", activeServerChannelId.value)
   }
 
-  if (activeDmChannelId.value) {
-    socket.value.emit("channel:join", activeDmChannelId.value)
+  if (activeDmThreadId.value) {
+    socket.value.emit("thread:join", activeDmThreadId.value)
   }
 }
 
-async function loadBootstrap() {
+async function fetchBootstrap(overrides = {}) {
+  const query = buildBootstrapQuery(overrides)
+  const response = await apiFetch(`/api/bootstrap${query.size ? `?${query.toString()}` : ""}`)
+
+  if (!response.ok) {
+    if (response.status === 401) {
+      clearSession()
+      return null
+    }
+
+    throw new Error(`Failed to fetch data (${response.status})`)
+  }
+
+  return response.json()
+}
+
+async function loadBootstrap(overrides = {}) {
   if (!token.value) {
     bootstrap.value = null
     loading.value = false
@@ -186,30 +211,13 @@ async function loadBootstrap() {
   error.value = ""
 
   try {
-    const query = buildBootstrapQuery()
-    const response = await apiFetch(`/api/bootstrap${query.size ? `?${query.toString()}` : ""}`)
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        clearSession()
-        loading.value = false
-        return
-      }
-
-      throw new Error(`Failed to fetch data (${response.status})`)
-    }
-
-    bootstrap.value = await response.json()
+    bootstrap.value = await fetchBootstrap(overrides)
   } catch (fetchError) {
     error.value = fetchError.message
   } finally {
     loading.value = false
   }
 }
-
-const activeDmThreadId = computed(
-  () => dmList.value.find((thread) => thread.active)?.id || null
-)
 
 async function handleSelectServerChannel(channelId) {
   if (!channelId || channelId === activeServerChannelId.value) {
@@ -221,19 +229,7 @@ async function handleSelectServerChannel(channelId) {
   loading.value = true
 
   try {
-    const query = buildBootstrapQuery({ serverChannelId: channelId })
-    const response = await apiFetch(`/api/bootstrap?${query.toString()}`)
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        clearSession()
-        return
-      }
-
-      throw new Error(`Failed to fetch data (${response.status})`)
-    }
-
-    bootstrap.value = await response.json()
+    bootstrap.value = await fetchBootstrap({ serverChannelId: channelId })
     error.value = ""
   } catch (fetchError) {
     error.value = fetchError.message
@@ -243,6 +239,8 @@ async function handleSelectServerChannel(channelId) {
 }
 
 async function handleSelectDm(threadId) {
+  dmSection.value = "messages"
+
   if (!threadId || threadId === activeDmThreadId.value) {
     view.value = "dm"
     return
@@ -252,19 +250,7 @@ async function handleSelectDm(threadId) {
   loading.value = true
 
   try {
-    const query = buildBootstrapQuery({ dmThreadId: threadId })
-    const response = await apiFetch(`/api/bootstrap?${query.toString()}`)
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        clearSession()
-        return
-      }
-
-      throw new Error(`Failed to fetch data (${response.status})`)
-    }
-
-    bootstrap.value = await response.json()
+    bootstrap.value = await fetchBootstrap({ dmThreadId: threadId })
     error.value = ""
   } catch (fetchError) {
     error.value = fetchError.message
@@ -288,23 +274,11 @@ async function handleSelectGuild(guildId) {
   error.value = ""
 
   try {
-    const query = buildBootstrapQuery({
+    bootstrap.value = await fetchBootstrap({
       guildId,
       serverChannelId: null,
       dmThreadId: null,
     })
-    const response = await apiFetch(`/api/bootstrap?${query.toString()}`)
-
-    if (!response.ok) {
-      if (response.status === 401) {
-        clearSession()
-        return
-      }
-
-      throw new Error(`Failed to fetch data (${response.status})`)
-    }
-
-    bootstrap.value = await response.json()
   } catch (fetchError) {
     error.value = fetchError.message
   } finally {
@@ -344,6 +318,19 @@ function closeCreateChannel() {
   isCreateChannelOpen.value = false
 }
 
+function setView(nextView) {
+  view.value = nextView
+
+  if (nextView === "dm") {
+    dmSection.value = activeDmThreadId.value ? "messages" : "friends"
+  }
+}
+
+function setDmSection(section) {
+  dmSection.value = section
+  view.value = "dm"
+}
+
 async function handleCreateServer() {
   const name = createServerName.value.trim()
 
@@ -369,18 +356,11 @@ async function handleCreateServer() {
       throw new Error(data.error || `Failed to create server (${response.status})`)
     }
 
-    const query = buildBootstrapQuery({
+    bootstrap.value = await fetchBootstrap({
       guildId: data.activeGuildId,
       serverChannelId: data.activeServerChannelId,
       dmThreadId: null,
     })
-    const bootstrapResponse = await apiFetch(`/api/bootstrap?${query.toString()}`)
-
-    if (!bootstrapResponse.ok) {
-      throw new Error(`Failed to fetch data (${bootstrapResponse.status})`)
-    }
-
-    bootstrap.value = await bootstrapResponse.json()
     view.value = "server"
     isCreateServerOpen.value = false
     createServerName.value = ""
@@ -421,17 +401,10 @@ async function handleCreateChannel() {
       throw new Error(data.error || `Failed to create channel (${response.status})`)
     }
 
-    const query = buildBootstrapQuery({
+    bootstrap.value = await fetchBootstrap({
       guildId: activeGuildId.value,
       serverChannelId: data.channel.id,
     })
-    const bootstrapResponse = await apiFetch(`/api/bootstrap?${query.toString()}`)
-
-    if (!bootstrapResponse.ok) {
-      throw new Error(`Failed to fetch data (${bootstrapResponse.status})`)
-    }
-
-    bootstrap.value = await bootstrapResponse.json()
     view.value = "server"
     isCreateChannelOpen.value = false
     createChannelName.value = ""
@@ -465,10 +438,12 @@ async function handleAuthenticate({ mode, payload }) {
 }
 
 async function handleSendMessage({ view: nextView, content, attachments = [] }) {
-  const channelId =
-    nextView === "server" ? activeServerChannelId.value : activeDmChannelId.value
+  const payload =
+    nextView === "server"
+      ? { channelId: activeServerChannelId.value, content, attachments }
+      : { threadId: activeDmThreadId.value, content, attachments }
 
-  if (!channelId) {
+  if (!payload.channelId && !payload.threadId) {
     return
   }
 
@@ -478,11 +453,7 @@ async function handleSendMessage({ view: nextView, content, attachments = [] }) 
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        channelId,
-        content,
-        attachments,
-      }),
+      body: JSON.stringify(payload),
     })
 
     if (!response.ok) {
@@ -491,19 +462,92 @@ async function handleSendMessage({ view: nextView, content, attachments = [] }) 
         return
       }
 
-      throw new Error(`Failed to send message (${response.status})`)
+      const data = await response.json().catch(() => ({}))
+      throw new Error(data.error || `Failed to send message (${response.status})`)
     }
 
     const createdMessage = await response.json()
 
     if (!socket.value?.connected) {
-      appendMessage(channelId, createdMessage)
+      appendMessage(createdMessage)
     }
 
     error.value = ""
   } catch (sendError) {
     error.value = sendError.message
     console.error("Failed to send message:", sendError)
+  }
+}
+
+async function handleSendFriendRequest(username) {
+  const trimmedUsername = username.trim()
+
+  if (!trimmedUsername) {
+    error.value = "Enter a username."
+    return
+  }
+
+  try {
+    const response = await apiFetch("/api/friends/requests", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ username: trimmedUsername }),
+    })
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || `Failed to send friend request (${response.status})`)
+    }
+
+    await loadBootstrap()
+    view.value = "dm"
+    dmSection.value = "friends"
+  } catch (requestError) {
+    error.value = requestError.message
+  }
+}
+
+async function handleAcceptFriendRequest(requestId) {
+  try {
+    const response = await apiFetch(`/api/friends/requests/${requestId}/accept`, {
+      method: "POST",
+    })
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || `Failed to accept request (${response.status})`)
+    }
+
+    await loadBootstrap()
+    view.value = "dm"
+    dmSection.value = "friends"
+  } catch (acceptError) {
+    error.value = acceptError.message
+  }
+}
+
+async function handleOpenDmWithFriend(friendUserId) {
+  try {
+    const response = await apiFetch("/api/dms", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ friendUserId }),
+    })
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || `Failed to open DM (${response.status})`)
+    }
+
+    await loadBootstrap({ dmThreadId: data.threadId })
+    view.value = "dm"
+    dmSection.value = "messages"
+  } catch (dmError) {
+    error.value = dmError.message
   }
 }
 
@@ -521,17 +565,17 @@ watch(activeServerChannelId, (nextId, previousId) => {
   }
 })
 
-watch(activeDmChannelId, (nextId, previousId) => {
+watch(activeDmThreadId, (nextId, previousId) => {
   if (!socket.value) {
     return
   }
 
   if (previousId) {
-    socket.value.emit("channel:leave", previousId)
+    socket.value.emit("thread:leave", previousId)
   }
 
   if (nextId) {
-    socket.value.emit("channel:join", nextId)
+    socket.value.emit("thread:join", nextId)
   }
 })
 
@@ -560,31 +604,50 @@ onBeforeUnmount(() => {
       :guilds="guilds"
       :view="view"
       :active-guild-id="activeGuildId"
-      @set-view="view = $event"
+      @set-view="setView"
       @select-guild="handleSelectGuild"
       @create-server="openCreateServer"
     />
     <Sidebar
       :view="view"
+      :dm-section="dmSection"
       :server-channels="serverChannels"
       :dm-list="dmList"
       :active-guild-name="activeGuildName"
       :current-user="currentUser"
       :server-channel-name="serverChannelName"
+      :friend-count="friends.length"
+      :request-count="incomingFriendRequests.length"
       @logout="clearSession"
+      @set-dm-section="setDmSection"
       @open-create-channel="openCreateChannel"
       @select-server-channel="handleSelectServerChannel"
       @select-dm="handleSelectDm"
     />
     <ChatMain
       :send-message="handleSendMessage"
+      :send-friend-request="handleSendFriendRequest"
+      :accept-friend-request="handleAcceptFriendRequest"
+      :open-dm-with-friend="handleOpenDmWithFriend"
       :view="view"
+      :dm-section="dmSection"
       :server-messages="serverMessages"
       :dm-messages="dmMessages"
       :server-channel-name="serverChannelName"
       :dm-title="dmTitle"
+      :friends="friends"
+      :incoming-friend-requests="incomingFriendRequests"
+      :outgoing-friend-requests="outgoingFriendRequests"
+      :error="error"
     />
-    <Members :view="view" :server-members="serverMembers" :dm-members="dmMembers" />
+    <Members
+      :view="view"
+      :dm-section="dmSection"
+      :server-members="serverMembers"
+      :dm-members="dmMembers"
+      :friends="friends"
+      :incoming-friend-requests="incomingFriendRequests"
+    />
     <div v-if="isCreateServerOpen" class="modal-shell" @click.self="closeCreateServer">
       <div class="modal-card">
         <div class="modal-card__header">
