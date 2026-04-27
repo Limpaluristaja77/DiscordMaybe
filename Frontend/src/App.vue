@@ -20,10 +20,17 @@ const serverMessages = computed(() => bootstrap.value?.serverMessages || [])
 const dmMessages = computed(() => bootstrap.value?.dmMessages || [])
 const serverMembers = computed(() => bootstrap.value?.serverMembers || [])
 const dmMembers = computed(() => bootstrap.value?.dmMembers || [])
+const activeGuildId = computed(() => bootstrap.value?.activeGuildId || null)
 const activeGuildName = computed(() => bootstrap.value?.activeGuildName || "Server")
 const dmTitle = computed(() => bootstrap.value?.dmTitle || "Direct Messages")
 const activeServerChannelId = computed(() => bootstrap.value?.activeServerChannelId || null)
 const activeDmChannelId = computed(() => bootstrap.value?.activeDmChannelId || null)
+const createServerName = ref("")
+const creatingServer = ref(false)
+const isCreateServerOpen = ref(false)
+const createChannelName = ref("")
+const creatingChannel = ref(false)
+const isCreateChannelOpen = ref(false)
 const currentUser = computed(
   () =>
     bootstrap.value?.currentUser || {
@@ -47,6 +54,33 @@ async function apiFetch(url, options = {}) {
     ...options,
     headers,
   })
+}
+
+function buildBootstrapQuery(overrides = {}) {
+  const query = new URLSearchParams()
+  const guildId = Object.prototype.hasOwnProperty.call(overrides, "guildId")
+    ? overrides.guildId
+    : activeGuildId.value
+  const serverChannelId = Object.prototype.hasOwnProperty.call(overrides, "serverChannelId")
+    ? overrides.serverChannelId
+    : activeServerChannelId.value
+  const dmThreadId = Object.prototype.hasOwnProperty.call(overrides, "dmThreadId")
+    ? overrides.dmThreadId
+    : activeDmThreadId.value
+
+  if (guildId) {
+    query.set("guildId", guildId)
+  }
+
+  if (serverChannelId) {
+    query.set("serverChannelId", serverChannelId)
+  }
+
+  if (dmThreadId) {
+    query.set("dmThreadId", dmThreadId)
+  }
+
+  return query
 }
 
 function clearSession() {
@@ -152,7 +186,8 @@ async function loadBootstrap() {
   error.value = ""
 
   try {
-    const response = await apiFetch("/api/bootstrap")
+    const query = buildBootstrapQuery()
+    const response = await apiFetch(`/api/bootstrap${query.size ? `?${query.toString()}` : ""}`)
 
     if (!response.ok) {
       if (response.status === 401) {
@@ -169,6 +204,241 @@ async function loadBootstrap() {
     error.value = fetchError.message
   } finally {
     loading.value = false
+  }
+}
+
+const activeDmThreadId = computed(
+  () => dmList.value.find((thread) => thread.active)?.id || null
+)
+
+async function handleSelectServerChannel(channelId) {
+  if (!channelId || channelId === activeServerChannelId.value) {
+    view.value = "server"
+    return
+  }
+
+  view.value = "server"
+  loading.value = true
+
+  try {
+    const query = buildBootstrapQuery({ serverChannelId: channelId })
+    const response = await apiFetch(`/api/bootstrap?${query.toString()}`)
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearSession()
+        return
+      }
+
+      throw new Error(`Failed to fetch data (${response.status})`)
+    }
+
+    bootstrap.value = await response.json()
+    error.value = ""
+  } catch (fetchError) {
+    error.value = fetchError.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleSelectDm(threadId) {
+  if (!threadId || threadId === activeDmThreadId.value) {
+    view.value = "dm"
+    return
+  }
+
+  view.value = "dm"
+  loading.value = true
+
+  try {
+    const query = buildBootstrapQuery({ dmThreadId: threadId })
+    const response = await apiFetch(`/api/bootstrap?${query.toString()}`)
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearSession()
+        return
+      }
+
+      throw new Error(`Failed to fetch data (${response.status})`)
+    }
+
+    bootstrap.value = await response.json()
+    error.value = ""
+  } catch (fetchError) {
+    error.value = fetchError.message
+  } finally {
+    loading.value = false
+  }
+}
+
+async function handleSelectGuild(guildId) {
+  if (!guildId) {
+    return
+  }
+
+  view.value = "server"
+
+  if (guildId === activeGuildId.value) {
+    return
+  }
+
+  loading.value = true
+  error.value = ""
+
+  try {
+    const query = buildBootstrapQuery({
+      guildId,
+      serverChannelId: null,
+      dmThreadId: null,
+    })
+    const response = await apiFetch(`/api/bootstrap?${query.toString()}`)
+
+    if (!response.ok) {
+      if (response.status === 401) {
+        clearSession()
+        return
+      }
+
+      throw new Error(`Failed to fetch data (${response.status})`)
+    }
+
+    bootstrap.value = await response.json()
+  } catch (fetchError) {
+    error.value = fetchError.message
+  } finally {
+    loading.value = false
+  }
+}
+
+function openCreateServer() {
+  createServerName.value = ""
+  error.value = ""
+  isCreateServerOpen.value = true
+}
+
+function closeCreateServer() {
+  if (creatingServer.value) {
+    return
+  }
+
+  isCreateServerOpen.value = false
+}
+
+function openCreateChannel() {
+  if (view.value !== "server" || !activeGuildId.value) {
+    return
+  }
+
+  createChannelName.value = ""
+  error.value = ""
+  isCreateChannelOpen.value = true
+}
+
+function closeCreateChannel() {
+  if (creatingChannel.value) {
+    return
+  }
+
+  isCreateChannelOpen.value = false
+}
+
+async function handleCreateServer() {
+  const name = createServerName.value.trim()
+
+  if (!name) {
+    error.value = "Enter a server name."
+    return
+  }
+
+  creatingServer.value = true
+  error.value = ""
+
+  try {
+    const response = await apiFetch("/api/guilds", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name }),
+    })
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || `Failed to create server (${response.status})`)
+    }
+
+    const query = buildBootstrapQuery({
+      guildId: data.activeGuildId,
+      serverChannelId: data.activeServerChannelId,
+      dmThreadId: null,
+    })
+    const bootstrapResponse = await apiFetch(`/api/bootstrap?${query.toString()}`)
+
+    if (!bootstrapResponse.ok) {
+      throw new Error(`Failed to fetch data (${bootstrapResponse.status})`)
+    }
+
+    bootstrap.value = await bootstrapResponse.json()
+    view.value = "server"
+    isCreateServerOpen.value = false
+    createServerName.value = ""
+  } catch (creationError) {
+    error.value = creationError.message
+  } finally {
+    creatingServer.value = false
+  }
+}
+
+async function handleCreateChannel() {
+  const name = createChannelName.value.trim()
+
+  if (!activeGuildId.value) {
+    error.value = "Select a server first."
+    return
+  }
+
+  if (!name) {
+    error.value = "Enter a channel name."
+    return
+  }
+
+  creatingChannel.value = true
+  error.value = ""
+
+  try {
+    const response = await apiFetch(`/api/guilds/${activeGuildId.value}/channels`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name }),
+    })
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || `Failed to create channel (${response.status})`)
+    }
+
+    const query = buildBootstrapQuery({
+      guildId: activeGuildId.value,
+      serverChannelId: data.channel.id,
+    })
+    const bootstrapResponse = await apiFetch(`/api/bootstrap?${query.toString()}`)
+
+    if (!bootstrapResponse.ok) {
+      throw new Error(`Failed to fetch data (${bootstrapResponse.status})`)
+    }
+
+    bootstrap.value = await bootstrapResponse.json()
+    view.value = "server"
+    isCreateChannelOpen.value = false
+    createChannelName.value = ""
+  } catch (creationError) {
+    error.value = creationError.message
+  } finally {
+    creatingChannel.value = false
   }
 }
 
@@ -286,7 +556,14 @@ onBeforeUnmount(() => {
   <AuthPanel v-else-if="!isAuthenticated" :authenticate="handleAuthenticate" />
   <div v-else-if="error && !bootstrap" class="app app--status">Failed to load: {{ error }}</div>
   <div v-else class="app">
-    <Rail :guilds="guilds" :view="view" @set-view="view = $event" />
+    <Rail
+      :guilds="guilds"
+      :view="view"
+      :active-guild-id="activeGuildId"
+      @set-view="view = $event"
+      @select-guild="handleSelectGuild"
+      @create-server="openCreateServer"
+    />
     <Sidebar
       :view="view"
       :server-channels="serverChannels"
@@ -295,6 +572,9 @@ onBeforeUnmount(() => {
       :current-user="currentUser"
       :server-channel-name="serverChannelName"
       @logout="clearSession"
+      @open-create-channel="openCreateChannel"
+      @select-server-channel="handleSelectServerChannel"
+      @select-dm="handleSelectDm"
     />
     <ChatMain
       :send-message="handleSendMessage"
@@ -305,5 +585,61 @@ onBeforeUnmount(() => {
       :dm-title="dmTitle"
     />
     <Members :view="view" :server-members="serverMembers" :dm-members="dmMembers" />
+    <div v-if="isCreateServerOpen" class="modal-shell" @click.self="closeCreateServer">
+      <div class="modal-card">
+        <div class="modal-card__header">
+          <div>
+            <div class="modal-card__eyebrow">Create</div>
+            <h2 class="modal-card__title">New Server</h2>
+          </div>
+          <button class="icon-btn" title="Close" @click="closeCreateServer">&#10005;</button>
+        </div>
+        <p class="modal-card__copy">Pick a name and we'll set up starter channels for you.</p>
+        <input
+          v-model="createServerName"
+          class="auth-input"
+          type="text"
+          maxlength="40"
+          placeholder="Server name"
+          @keydown.enter.prevent="handleCreateServer"
+        />
+        <div class="modal-card__actions">
+          <button class="auth-toggle__btn" :disabled="creatingServer" @click="closeCreateServer">
+            Cancel
+          </button>
+          <button class="auth-submit" :disabled="creatingServer" @click="handleCreateServer">
+            {{ creatingServer ? "Creating..." : "Create Server" }}
+          </button>
+        </div>
+      </div>
+    </div>
+    <div v-if="isCreateChannelOpen" class="modal-shell" @click.self="closeCreateChannel">
+      <div class="modal-card">
+        <div class="modal-card__header">
+          <div>
+            <div class="modal-card__eyebrow">Create</div>
+            <h2 class="modal-card__title">New Channel</h2>
+          </div>
+          <button class="icon-btn" title="Close" @click="closeCreateChannel">&#10005;</button>
+        </div>
+        <p class="modal-card__copy">Add a text channel to {{ activeGuildName }}.</p>
+        <input
+          v-model="createChannelName"
+          class="auth-input"
+          type="text"
+          maxlength="40"
+          placeholder="channel-name"
+          @keydown.enter.prevent="handleCreateChannel"
+        />
+        <div class="modal-card__actions">
+          <button class="auth-toggle__btn" :disabled="creatingChannel" @click="closeCreateChannel">
+            Cancel
+          </button>
+          <button class="auth-submit" :disabled="creatingChannel" @click="handleCreateChannel">
+            {{ creatingChannel ? "Creating..." : "Create Channel" }}
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>

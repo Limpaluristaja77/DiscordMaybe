@@ -8,7 +8,7 @@ defineProps({
   serverChannelName: { type: String, required: true },
 })
 
-const emit = defineEmits(["logout"])
+const emit = defineEmits(["logout", "select-server-channel", "select-dm", "open-create-channel"])
 </script>
 
 <template>
@@ -26,7 +26,13 @@ const emit = defineEmits(["logout"])
           }}
         </div>
       </div>
-      <button class="icon-btn">+</button>
+      <button
+        class="icon-btn"
+        :title="view === 'server' ? 'Add channel' : 'New message'"
+        @click="view === 'server' ? emit('open-create-channel') : null"
+      >
+        +
+      </button>
     </div>
 
     <div v-if="view === 'dm'" class="sidebar__section">
@@ -38,7 +44,13 @@ const emit = defineEmits(["logout"])
         <button class="dm-shortcuts__item">Quests</button>
       </div>
       <div class="section__title">Direct Messages</div>
-      <button v-for="dm in dmList" :key="dm.id" class="dm-row" :class="{ active: dm.active }">
+      <button
+        v-for="dm in dmList"
+        :key="dm.id"
+        class="dm-row"
+        :class="{ active: dm.active }"
+        @click="emit('select-dm', dm.id)"
+      >
         <span class="dm-row__avatar">{{ dm.name[0] }}</span>
         <span class="dm-row__info">
           <span class="dm-row__name">{{ dm.name }}</span>
@@ -54,6 +66,7 @@ const emit = defineEmits(["logout"])
         :key="c.id"
         class="channel"
         :class="{ active: c.active }"
+        @click="emit('select-server-channel', c.id)"
       >
         <span class="channel__hash">#</span>
         <span class="channel__name">{{ c.name }}</span>

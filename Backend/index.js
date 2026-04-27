@@ -150,6 +150,10 @@ function serializeMessage(message) {
   };
 }
 
+function buildGuildBadge(index) {
+  return index % 2 === 0 ? 0 : 3;
+}
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     const { username, email, password } = req.body ?? {};
@@ -243,6 +247,11 @@ app.post("/api/auth/login", async (req, res) => {
 app.get("/api/bootstrap", requireAuth, async (req, res) => {
   try {
     const currentUser = req.user;
+    const requestedGuildId = typeof req.query.guildId === "string" ? req.query.guildId : "";
+    const requestedServerChannelId =
+      typeof req.query.serverChannelId === "string" ? req.query.serverChannelId : "";
+    const requestedDmThreadId =
+      typeof req.query.dmThreadId === "string" ? req.query.dmThreadId : "";
     const guilds = await prisma.guild.findMany({
       orderBy: { createdAt: "asc" },
       include: {
@@ -252,11 +261,14 @@ app.get("/api/bootstrap", requireAuth, async (req, res) => {
       },
     });
 
-    const activeGuild = guilds[0] || null;
+    const activeGuild = guilds.find((guild) => guild.id === requestedGuildId) || guilds[0] || null;
     const serverChannels = (activeGuild?.channels || []).filter(
       (channel) => !channel.name.startsWith("dm-")
     );
-    const activeServerChannel = serverChannels[0] || null;
+    const activeServerChannel =
+      serverChannels.find((channel) => channel.id === requestedServerChannelId) ||
+      serverChannels[0] ||
+      null;
 
     const serverMessagesRaw = activeServerChannel
       ? await prisma.message.findMany({
@@ -293,7 +305,8 @@ app.get("/api/bootstrap", requireAuth, async (req, res) => {
       orderBy: { updatedAt: "desc" },
     });
 
-    const activeDmThread = dmThreads[0] || null;
+    const activeDmThread =
+      dmThreads.find((thread) => thread.id === requestedDmThreadId) || dmThreads[0] || null;
     const dmPartner =
       activeDmThread?.participants.find(
         (participant) => participant.userId !== currentUser.id
@@ -338,11 +351,13 @@ app.get("/api/bootstrap", requireAuth, async (req, res) => {
 
     res.json({
       currentUser: serializeAuthUser(currentUser),
+      activeGuildId: activeGuild?.id || null,
       guilds: guilds.map((guild, index) => ({
         id: guild.id,
         name: guild.name,
         abbr: guild.name.slice(0, 2).toUpperCase(),
-        badge: index % 2 === 0 ? 0 : 3,
+        badge: buildGuildBadge(index),
+        active: guild.id === activeGuild?.id,
       })),
       activeGuildName: activeGuild?.name || "No Server",
       serverChannels: serverChannels.map((channel, index) => ({
@@ -383,6 +398,141 @@ app.get("/api/bootstrap", requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error("Failed to build bootstrap payload:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/api/guilds", requireAuth, async (req, res) => {
+  try {
+    const rawName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+
+    if (rawName.length < 2) {
+      return res.status(400).json({ error: "Server name must be at least 2 characters" });
+    }
+
+    const name = rawName.slice(0, 40);
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "chat";
+
+    const guild = await prisma.guild.create({
+      data: {
+        name,
+        ownerId: req.user.id,
+        members: {
+          create: {
+            userId: req.user.id,
+            nickname: req.user.username,
+          },
+        },
+        channels: {
+          create: [
+            {
+              name: "general",
+              position: 0,
+            },
+            {
+              name: "announcements",
+              type: "ANNOUNCEMENT",
+              position: 1,
+            },
+            {
+              name: `${slug}-chat`,
+              position: 2,
+            },
+          ],
+        },
+      },
+      include: {
+        channels: {
+          orderBy: { position: "asc" },
+        },
+      },
+    });
+
+    res.status(201).json({
+      guild: {
+        id: guild.id,
+        name: guild.name,
+        abbr: guild.name.slice(0, 2).toUpperCase(),
+        badge: buildGuildBadge(0),
+        active: true,
+      },
+      activeGuildId: guild.id,
+      activeServerChannelId: guild.channels[0]?.id || null,
+    });
+  } catch (error) {
+    console.error("Failed to create guild:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/api/guilds/:guildId/channels", requireAuth, async (req, res) => {
+  try {
+    const guildId = typeof req.params.guildId === "string" ? req.params.guildId : "";
+    const rawName = typeof req.body?.name === "string" ? req.body.name.trim() : "";
+
+    if (!guildId) {
+      return res.status(400).json({ error: "Guild id is required" });
+    }
+
+    if (rawName.length < 2) {
+      return res.status(400).json({ error: "Channel name must be at least 2 characters" });
+    }
+
+    const membership = await prisma.guildMember.findUnique({
+      where: {
+        guildId_userId: {
+          guildId,
+          userId: req.user.id,
+        },
+      },
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: "You are not a member of this server" });
+    }
+
+    const name = rawName
+      .slice(0, 40)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "");
+
+    if (!name) {
+      return res.status(400).json({ error: "Channel name must contain letters or numbers" });
+    }
+
+    const existingChannel = await prisma.channel.findFirst({
+      where: {
+        guildId,
+        name,
+      },
+    });
+
+    if (existingChannel) {
+      return res.status(409).json({ error: "A channel with that name already exists" });
+    }
+
+    const lastChannel = await prisma.channel.findFirst({
+      where: { guildId },
+      orderBy: { position: "desc" },
+    });
+
+    const channel = await prisma.channel.create({
+      data: {
+        guildId,
+        name,
+        position: lastChannel ? lastChannel.position + 1 : 0,
+      },
+    });
+
+    res.status(201).json({
+      channel: {
+        id: channel.id,
+        name: channel.name,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to create channel:", error);
     res.status(500).json({ error: "Internal server error" });
   }
 });
