@@ -1,5 +1,7 @@
 const express = require("express");
 const { serializeMessage } = require("../lib/serializers");
+const { markDmThreadRead } = require("../services/dmReadStateService");
+const { markChannelRead } = require("../services/channelReadStateService");
 
 function createMessagesRouter({ prisma, io, requireAuth }) {
   const router = express.Router();
@@ -95,6 +97,8 @@ function createMessagesRouter({ prisma, io, requireAuth }) {
           where: { id: threadId },
           data: { updatedAt: new Date() },
         });
+
+        await markDmThreadRead(prisma, threadId, req.user.id, message);
       }
 
       const serializedMessage = serializeMessage(message);
@@ -110,6 +114,48 @@ function createMessagesRouter({ prisma, io, requireAuth }) {
       res.status(201).json(serializedMessage);
     } catch (error) {
       console.error("Failed to create message:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  router.post("/channels/:channelId/read", requireAuth, async (req, res) => {
+    try {
+      const channelId = typeof req.params?.channelId === "string" ? req.params.channelId : "";
+
+      if (!channelId) {
+        return res.status(400).json({ error: "channelId is required" });
+      }
+
+      const channel = await prisma.channel.findUnique({
+        where: { id: channelId },
+      });
+
+      if (!channel) {
+        return res.status(404).json({ error: "Channel not found" });
+      }
+
+      const membership = await prisma.guildMember.findUnique({
+        where: {
+          guildId_userId: {
+            guildId: channel.guildId,
+            userId: req.user.id,
+          },
+        },
+      });
+
+      if (!membership) {
+        return res.status(403).json({ error: "You are not a member of this server" });
+      }
+
+      const latestMessage = await prisma.message.findFirst({
+        where: { channelId },
+        orderBy: { createdAt: "desc" },
+      });
+
+      await markChannelRead(prisma, channelId, req.user.id, latestMessage);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Failed to mark channel as read:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   });

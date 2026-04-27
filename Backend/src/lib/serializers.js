@@ -54,12 +54,25 @@ function serializeDmThread(thread, currentUserId) {
   const partner = thread.participants.find(
     (participant) => participant.userId !== currentUserId
   )?.user;
+  const latestMessage = thread.messages?.[0] || null;
+  const latestMessageText = latestMessage
+    ? latestMessage.content ||
+      (latestMessage.attachments?.length ? "Sent an attachment" : "Started a conversation")
+    : "Start a conversation";
+  const preview = latestMessage
+    ? `${latestMessage.authorId === currentUserId ? "You: " : ""}${latestMessageText}`
+    : "Start a conversation";
 
   return {
     id: thread.id,
     name: partner?.username || "Group Chat",
-    subtitle: partner ? "Direct Message" : "Group",
+    subtitle: preview,
     status: partner ? getUserStatus(partner.id) : "online",
+    preview,
+    lastMessageAuthorId: latestMessage?.authorId || null,
+    lastMessageAt: latestMessage?.createdAt || thread.updatedAt,
+    unreadCount: 0,
+    hasUnread: false,
     active: false,
   };
 }

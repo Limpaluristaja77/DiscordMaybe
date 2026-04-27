@@ -1,5 +1,6 @@
 const express = require("express");
 const { areUsersFriends } = require("../services/friendService");
+const { markDmThreadRead } = require("../services/dmReadStateService");
 
 function createDirectMessagesRouter({ prisma, requireAuth }) {
   const router = express.Router();
@@ -57,6 +58,43 @@ function createDirectMessagesRouter({ prisma, requireAuth }) {
       res.status(201).json({ threadId: thread.id });
     } catch (error) {
       console.error("Failed to create DM thread:", error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  });
+
+  router.post("/:threadId/read", requireAuth, async (req, res) => {
+    try {
+      const threadId = typeof req.params?.threadId === "string" ? req.params.threadId : "";
+
+      if (!threadId) {
+        return res.status(400).json({ error: "threadId is required" });
+      }
+
+      const thread = await prisma.directMessageThread.findFirst({
+        where: {
+          id: threadId,
+          participants: {
+            some: {
+              userId: req.user.id,
+            },
+          },
+        },
+        include: {
+          messages: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+          },
+        },
+      });
+
+      if (!thread) {
+        return res.status(404).json({ error: "Direct message thread not found" });
+      }
+
+      await markDmThreadRead(prisma, threadId, req.user.id, thread.messages[0] || null);
+      res.json({ ok: true });
+    } catch (error) {
+      console.error("Failed to mark DM as read:", error);
       res.status(500).json({ error: "Internal server error" });
     }
   });

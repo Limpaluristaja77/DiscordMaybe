@@ -358,7 +358,7 @@ input {
 
 .dm-row {
   display: grid;
-  grid-template-columns: 36px 1fr;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
   padding: 6px;
@@ -387,6 +387,13 @@ input {
 .dm-row__info {
   display: grid;
   gap: 2px;
+  min-width: 0;
+}
+
+.dm-row__info--unread .dm-row__name,
+.dm-row__info--unread .dm-row__sub {
+  color: #fff;
+  font-weight: 700;
 }
 
 .dm-row__name {
@@ -397,6 +404,20 @@ input {
 .dm-row__sub {
   font-size: 0.72rem;
   color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dm-row__pill {
+  background: var(--alert);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.7rem;
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  text-align: center;
 }
 
 .channel {
@@ -419,6 +440,12 @@ input {
 
 .channel.active {
   background: #3a3c43;
+}
+
+.channel--unread .channel__name,
+.channel--unread .channel__hash {
+  color: #fff;
+  font-weight: 700;
 }
 
 .channel__hash {

@@ -21,6 +21,7 @@ model User {
   memberships    GuildMember[]
   sentMessages   Message[]     @relation("MessageAuthor")
   directMessages DirectMessage[]
+  dmReadStates   DmReadState[]
   sentFriendRequests     FriendRequest[] @relation("FriendRequestSender")
   receivedFriendRequests FriendRequest[] @relation("FriendRequestReceiver")
   readStates     ReadState[]
@@ -139,6 +140,7 @@ model DirectMessageThread {
   updatedAt     DateTime        @updatedAt
   participants  DirectMessage[]
   messages      Message[]
+  readStates    DmReadState[]
 
   @@index([updatedAt])
 }
@@ -153,6 +155,19 @@ model DirectMessage {
 
   @@unique([threadId, userId])
   @@index([userId])
+}
+
+model DmReadState {
+  id            String              @id @default(cuid())
+  userId        String
+  threadId      String
+  lastReadAt    DateTime            @default(now())
+  lastMessageId String?
+  user          User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  thread        DirectMessageThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, threadId])
+  @@index([threadId])
 }
 
 model ReadState {

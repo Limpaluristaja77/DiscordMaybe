@@ -39,6 +39,18 @@ const activeGuildName = computed(() => bootstrap.value?.activeGuildName || "Serv
 const dmTitle = computed(() => bootstrap.value?.dmTitle || "Direct Messages")
 const activeServerChannelId = computed(() => bootstrap.value?.activeServerChannelId || null)
 const activeDmThreadId = computed(() => bootstrap.value?.activeDmThreadId || null)
+const isServerChatOpen = computed(
+  () => view.value === "server" && Boolean(activeServerChannelId.value)
+)
+const isDmChatOpen = computed(
+  () => view.value === "dm" && dmSection.value === "messages" && Boolean(activeDmThreadId.value)
+)
+const unreadServerCount = computed(() =>
+  serverChannels.value.reduce((total, channel) => total + (channel.unread || 0), 0)
+)
+const unreadDmCount = computed(() =>
+  dmList.value.reduce((total, thread) => total + (thread.unreadCount || 0), 0)
+)
 const createServerName = ref("")
 const creatingServer = ref(false)
 const isCreateServerOpen = ref(false)
@@ -62,6 +74,8 @@ let remoteStream = null
 let remoteAudio = null
 let peerConnection = null
 let pendingRemoteCandidates = []
+let joinedDmThreadIds = new Set()
+let joinedServerChannelIds = new Set()
 
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {})
@@ -258,9 +272,59 @@ function clearSession() {
   token.value = ""
   bootstrap.value = null
   dmSection.value = "friends"
+  joinedDmThreadIds = new Set()
+  joinedServerChannelIds = new Set()
   localStorage.removeItem("discordmaybe-token")
   socket.value?.disconnect()
   socket.value = null
+}
+
+async function markActiveServerChannelRead() {
+  if (!bootstrap.value || !activeServerChannelId.value) {
+    return
+  }
+
+  bootstrap.value.serverChannels = bootstrap.value.serverChannels.map((channel) =>
+    channel.id === activeServerChannelId.value
+      ? {
+          ...channel,
+          unread: 0,
+          hasUnread: false,
+        }
+      : channel
+  )
+
+  try {
+    await apiFetch(`/api/messages/channels/${activeServerChannelId.value}/read`, {
+      method: "POST",
+    })
+  } catch (readError) {
+    console.error("Failed to mark channel as read:", readError)
+  }
+}
+
+async function markActiveDmThreadRead() {
+  if (!bootstrap.value || !activeDmThreadId.value) {
+    return
+  }
+
+  bootstrap.value.dmList = bootstrap.value.dmList.map((thread) =>
+    thread.id === activeDmThreadId.value
+      ? {
+          ...thread,
+          unreadCount: 0,
+          hasUnread: false,
+        }
+      : thread
+  )
+
+  try {
+    await apiFetch(`/api/dms/${activeDmThreadId.value}/read`, {
+      method: "POST",
+    })
+  } catch (readError) {
+    console.error("Failed to mark DM as read:", readError)
+  }
 }
 
 function appendMessage(message) {
@@ -270,10 +334,70 @@ function appendMessage(message) {
 
   if (message.channelId && message.channelId === activeServerChannelId.value) {
     bootstrap.value.serverMessages = [...bootstrap.value.serverMessages, message]
+    if (isServerChatOpen.value) {
+      void markActiveServerChannelRead()
+    }
+  }
+
+  if (message.channelId) {
+    const previousChannel = bootstrap.value.serverChannels.find(
+      (channel) => channel.id === message.channelId
+    )
+
+    if (previousChannel) {
+      const isActiveChannel = message.channelId === activeServerChannelId.value && isServerChatOpen.value
+      const isIncoming = message.user !== currentUser.value.username
+      const nextUnreadCount = isActiveChannel ? 0 : previousChannel.unread + (isIncoming ? 1 : 0)
+
+      bootstrap.value.serverChannels = bootstrap.value.serverChannels.map((channel) =>
+        channel.id === message.channelId
+          ? {
+              ...channel,
+              unread: nextUnreadCount,
+              hasUnread: nextUnreadCount > 0,
+            }
+          : channel
+      )
+    }
   }
 
   if (message.threadId && message.threadId === activeDmThreadId.value) {
     bootstrap.value.dmMessages = [...bootstrap.value.dmMessages, message]
+    if (isDmChatOpen.value) {
+      void markActiveDmThreadRead()
+    }
+  }
+
+  if (message.threadId) {
+    const previousThread = bootstrap.value.dmList.find((thread) => thread.id === message.threadId)
+
+    if (!previousThread) {
+      return
+    }
+
+    const previewText = `${message.user === currentUser.value.username ? "You: " : ""}${
+      message.text || (message.attachments?.length ? "Sent an attachment" : "Started a conversation")
+    }`
+    const isActiveThread = message.threadId === activeDmThreadId.value && isDmChatOpen.value
+    const isIncoming = message.user !== currentUser.value.username
+    const nextUnreadCount = isActiveThread
+      ? 0
+      : previousThread.unreadCount + (isIncoming ? 1 : 0)
+
+    const nextThread = {
+      ...previousThread,
+      preview: previewText,
+      subtitle: previewText,
+      lastMessageAuthorId: previousThread.lastMessageAuthorId,
+      lastMessageAt: new Date().toISOString(),
+      unreadCount: nextUnreadCount,
+      hasUnread: nextUnreadCount > 0,
+    }
+
+    bootstrap.value.dmList = [
+      nextThread,
+      ...bootstrap.value.dmList.filter((thread) => thread.id !== message.threadId),
+    ]
   }
 }
 
@@ -426,6 +550,13 @@ async function connectRealtime() {
     })
 
     registerRealtimeEvents(nextSocket)
+    nextSocket.on("connect", () => {
+      joinedDmThreadIds = new Set()
+      joinedServerChannelIds = new Set()
+      void joinActiveRooms()
+      syncDmRooms()
+      syncServerRooms()
+    })
     socket.value = nextSocket
   } catch (connectionError) {
     console.error("Failed to initialize realtime connection:", connectionError)
@@ -444,6 +575,50 @@ async function joinActiveRooms() {
   if (activeDmThreadId.value) {
     socket.value.emit("thread:join", activeDmThreadId.value)
   }
+}
+
+function syncDmRooms() {
+  if (!socket.value) {
+    return
+  }
+
+  const nextThreadIds = new Set(dmList.value.map((thread) => thread.id).filter(Boolean))
+
+  joinedDmThreadIds.forEach((threadId) => {
+    if (!nextThreadIds.has(threadId)) {
+      socket.value.emit("thread:leave", threadId)
+    }
+  })
+
+  nextThreadIds.forEach((threadId) => {
+    if (!joinedDmThreadIds.has(threadId)) {
+      socket.value.emit("thread:join", threadId)
+    }
+  })
+
+  joinedDmThreadIds = nextThreadIds
+}
+
+function syncServerRooms() {
+  if (!socket.value) {
+    return
+  }
+
+  const nextChannelIds = new Set(serverChannels.value.map((channel) => channel.id).filter(Boolean))
+
+  joinedServerChannelIds.forEach((channelId) => {
+    if (!nextChannelIds.has(channelId)) {
+      socket.value.emit("channel:leave", channelId)
+    }
+  })
+
+  nextChannelIds.forEach((channelId) => {
+    if (!joinedServerChannelIds.has(channelId)) {
+      socket.value.emit("channel:join", channelId)
+    }
+  })
+
+  joinedServerChannelIds = nextChannelIds
 }
 
 async function fetchBootstrap(overrides = {}) {
@@ -493,6 +668,9 @@ async function handleSelectServerChannel(channelId) {
 
   try {
     bootstrap.value = await fetchBootstrap({ serverChannelId: channelId })
+    if (isServerChatOpen.value) {
+      await markActiveServerChannelRead()
+    }
     error.value = ""
   } catch (fetchError) {
     error.value = fetchError.message
@@ -506,6 +684,9 @@ async function handleSelectDm(threadId) {
 
   if (!threadId || threadId === activeDmThreadId.value) {
     view.value = "dm"
+    if (isDmChatOpen.value) {
+      await markActiveDmThreadRead()
+    }
     return
   }
 
@@ -514,6 +695,7 @@ async function handleSelectDm(threadId) {
 
   try {
     bootstrap.value = await fetchBootstrap({ dmThreadId: threadId })
+    await markActiveDmThreadRead()
     error.value = ""
   } catch (fetchError) {
     error.value = fetchError.message
@@ -530,6 +712,9 @@ async function handleSelectGuild(guildId) {
   view.value = "server"
 
   if (guildId === activeGuildId.value) {
+    if (isServerChatOpen.value) {
+      await markActiveServerChannelRead()
+    }
     return
   }
 
@@ -911,14 +1096,6 @@ watch(activeServerChannelId, (nextId, previousId) => {
   if (!socket.value) {
     return
   }
-
-  if (previousId) {
-    socket.value.emit("channel:leave", previousId)
-  }
-
-  if (nextId) {
-    socket.value.emit("channel:join", nextId)
-  }
 })
 
 watch(activeDmThreadId, (nextId, previousId) => {
@@ -926,16 +1103,28 @@ watch(activeDmThreadId, (nextId, previousId) => {
     return
   }
 
-  if (previousId) {
-    socket.value.emit("thread:leave", previousId)
-  }
-
-  if (nextId) {
-    socket.value.emit("thread:join", nextId)
-  }
-
   if (incomingCall.value?.threadId === nextId && callStatus.value === "idle") {
     callStatus.value = "incoming"
+  }
+})
+
+watch(dmList, () => {
+  syncDmRooms()
+})
+
+watch(serverChannels, () => {
+  syncServerRooms()
+})
+
+watch(isServerChatOpen, async (isOpen) => {
+  if (isOpen) {
+    await markActiveServerChannelRead()
+  }
+})
+
+watch(isDmChatOpen, async (isOpen) => {
+  if (isOpen) {
+    await markActiveDmThreadRead()
   }
 })
 
@@ -952,6 +1141,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   endCall({ notifyPeer: true })
+  joinedDmThreadIds = new Set()
+  joinedServerChannelIds = new Set()
   socket.value?.disconnect()
 })
 </script>
@@ -979,6 +1170,8 @@ onBeforeUnmount(() => {
       :server-channel-name="serverChannelName"
       :friend-count="friends.length"
       :request-count="incomingFriendRequests.length"
+      :unread-dm-count="unreadDmCount"
+      :unread-server-count="unreadServerCount"
       @logout="clearSession"
       @set-dm-section="setDmSection"
       @open-create-channel="openCreateChannel"

@@ -37,6 +37,19 @@ async function buildBootstrapPayload(prisma, currentUser, query) {
         participants: {
           include: { user: true },
         },
+        messages: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          include: {
+            attachments: true,
+          },
+        },
+        readStates: {
+          where: {
+            userId: currentUser.id,
+          },
+          take: 1,
+        },
       },
       orderBy: { updatedAt: "desc" },
     }),
@@ -52,6 +65,20 @@ async function buildBootstrapPayload(prisma, currentUser, query) {
     serverChannels.find((channel) => channel.id === requestedServerChannelId) ||
     serverChannels[0] ||
     null;
+  const serverChannelIds = serverChannels.map((channel) => channel.id);
+  const serverReadStates = serverChannelIds.length
+    ? await prisma.readState.findMany({
+        where: {
+          userId: currentUser.id,
+          channelId: {
+            in: serverChannelIds,
+          },
+        },
+      })
+    : [];
+  const serverReadStateByChannelId = new Map(
+    serverReadStates.map((readState) => [readState.channelId, readState])
+  );
 
   const [serverMessagesRaw, serverMembersRaw] = await Promise.all([
     activeServerChannel
@@ -89,6 +116,55 @@ async function buildBootstrapPayload(prisma, currentUser, query) {
         },
       })
     : [];
+
+  const dmUnreadCounts = new Map(
+    await Promise.all(
+      dmThreads.map(async (thread) => {
+        const lastReadAt = thread.readStates[0]?.lastReadAt || null;
+        const unreadCount = await prisma.message.count({
+          where: {
+            threadId: thread.id,
+            authorId: {
+              not: currentUser.id,
+            },
+            ...(lastReadAt
+              ? {
+                  createdAt: {
+                    gt: lastReadAt,
+                  },
+                }
+              : {}),
+          },
+        });
+
+        return [thread.id, unreadCount];
+      })
+    )
+  );
+  const serverUnreadCounts = new Map(
+    await Promise.all(
+      serverChannels.map(async (channel) => {
+        const lastReadAt = serverReadStateByChannelId.get(channel.id)?.lastReadAt || null;
+        const unreadCount = await prisma.message.count({
+          where: {
+            channelId: channel.id,
+            authorId: {
+              not: currentUser.id,
+            },
+            ...(lastReadAt
+              ? {
+                  createdAt: {
+                    gt: lastReadAt,
+                  },
+                }
+              : {}),
+          },
+        });
+
+        return [channel.id, unreadCount];
+      })
+    )
+  );
 
   const threadByFriendId = new Map();
   dmThreads.forEach((thread) => {
@@ -129,10 +205,11 @@ async function buildBootstrapPayload(prisma, currentUser, query) {
       active: guild.id === activeGuild?.id,
     })),
     activeGuildName: activeGuild?.name || "No Server",
-    serverChannels: serverChannels.map((channel, index) => ({
+    serverChannels: serverChannels.map((channel) => ({
       id: channel.id,
       name: channel.name,
-      unread: index === 0 ? 0 : 1,
+      unread: serverUnreadCounts.get(channel.id) || 0,
+      hasUnread: (serverUnreadCounts.get(channel.id) || 0) > 0,
       active: channel.id === activeServerChannel?.id,
     })),
     activeServerChannelId: activeServerChannel?.id || null,
@@ -148,6 +225,8 @@ async function buildBootstrapPayload(prisma, currentUser, query) {
     outgoingFriendRequests,
     dmList: dmThreads.map((thread) => ({
       ...serializeDmThread(thread, currentUser.id),
+      unreadCount: dmUnreadCounts.get(thread.id) || 0,
+      hasUnread: (dmUnreadCounts.get(thread.id) || 0) > 0,
       active: thread.id === activeDmThread?.id,
     })),
     dmTitle: dmPartner ? dmPartner.username : "Direct Messages",

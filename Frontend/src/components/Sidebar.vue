@@ -9,6 +9,8 @@ defineProps({
   serverChannelName: { type: String, required: true },
   friendCount: { type: Number, required: true },
   requestCount: { type: Number, required: true },
+  unreadDmCount: { type: Number, required: true },
+  unreadServerCount: { type: Number, required: true },
 })
 
 const emit = defineEmits([
@@ -30,7 +32,7 @@ const emit = defineEmits([
         <div class="guild__meta">
           {{
             view === "server"
-              ? serverChannelName.toUpperCase()
+              ? `${serverChannelName.toUpperCase()}${unreadServerCount ? ` • ${unreadServerCount} unread` : ""}`
               : dmSection === "friends"
                 ? `${friendCount} friends • ${requestCount} pending`
                 : "Open a conversation with a friend"
@@ -62,7 +64,7 @@ const emit = defineEmits([
           @click="emit('set-dm-section', 'messages')"
         >
           Messages
-          <span v-if="dmList.length" class="sidebar__count">{{ dmList.length }}</span>
+          <span v-if="unreadDmCount" class="sidebar__count">{{ unreadDmCount }}</span>
         </button>
       </div>
       <div class="section__title">Direct Messages</div>
@@ -74,10 +76,11 @@ const emit = defineEmits([
         @click="emit('select-dm', dm.id)"
       >
         <span class="dm-row__avatar">{{ dm.name[0] }}</span>
-        <span class="dm-row__info">
+        <span class="dm-row__info" :class="{ 'dm-row__info--unread': dm.hasUnread }">
           <span class="dm-row__name">{{ dm.name }}</span>
-          <span class="dm-row__sub">{{ dm.subtitle }}</span>
+          <span class="dm-row__sub">{{ dm.preview || dm.subtitle }}</span>
         </span>
+        <span v-if="dm.unreadCount" class="dm-row__pill">{{ dm.unreadCount }}</span>
       </button>
       <div v-if="!dmList.length" class="sidebar__empty">
         Accepted friends will show up here once you start a direct message.
@@ -90,7 +93,7 @@ const emit = defineEmits([
         v-for="c in serverChannels"
         :key="c.id"
         class="channel"
-        :class="{ active: c.active }"
+        :class="{ active: c.active, 'channel--unread': c.hasUnread }"
         @click="emit('select-server-channel', c.id)"
       >
         <span class="channel__hash">#</span>
