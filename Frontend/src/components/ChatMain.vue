@@ -59,6 +59,7 @@ const props = defineProps({
   incomingCall: { type: Object, default: null },
   callMuted: { type: Boolean, required: true },
   currentUser: { type: Object, required: true },
+  contentLoading: { type: Boolean, default: false },
 })
 
 const activeMessages = computed(() =>
@@ -411,6 +412,7 @@ onBeforeUnmount(() => {
         </div>
       </section>
       <section ref="chatScroller" class="chat chat--with-call">
+        <div v-if="contentLoading" class="chat__loading">Refreshing conversation...</div>
         <div class="chat__intro">
           <div class="chat__badge">{{ new Date().toLocaleDateString() }}</div>
           <h1 class="chat__title">
@@ -451,6 +453,7 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else ref="chatScroller" class="chat">
+      <div v-if="contentLoading" class="chat__loading">Refreshing conversation...</div>
       <div v-if="showIncomingCall && callStatus === 'incoming' && !showCallStage" class="call-banner">
         <div>
           <div class="call-banner__title">Incoming voice call</div>

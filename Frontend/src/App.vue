@@ -14,6 +14,7 @@ const view = ref("server")
 const dmSection = ref("friends")
 const bootstrap = ref(null)
 const loading = ref(true)
+const contentLoading = ref(false)
 const error = ref("")
 const socket = ref(null)
 const token = ref(localStorage.getItem("discordmaybe-token") || "")
@@ -637,23 +638,62 @@ async function fetchBootstrap(overrides = {}) {
   return response.json()
 }
 
-async function loadBootstrap(overrides = {}) {
+function setActiveServerChannelLocally(channelId) {
+  if (!bootstrap.value) {
+    return
+  }
+
+  bootstrap.value.serverChannels = bootstrap.value.serverChannels.map((channel) => ({
+    ...channel,
+    active: channel.id === channelId,
+  }))
+}
+
+function setActiveDmThreadLocally(threadId) {
+  if (!bootstrap.value) {
+    return
+  }
+
+  bootstrap.value.dmList = bootstrap.value.dmList.map((thread) => ({
+    ...thread,
+    active: thread.id === threadId,
+  }))
+}
+
+function mergeBootstrap(nextBootstrap) {
+  if (!nextBootstrap) {
+    return
+  }
+
+  bootstrap.value = nextBootstrap
+}
+
+async function loadBootstrap(overrides = {}, { silent = false } = {}) {
   if (!token.value) {
     bootstrap.value = null
     loading.value = false
+    contentLoading.value = false
     error.value = ""
     return
   }
 
-  loading.value = true
+  if (silent) {
+    contentLoading.value = true
+  } else {
+    loading.value = true
+  }
   error.value = ""
 
   try {
-    bootstrap.value = await fetchBootstrap(overrides)
+    mergeBootstrap(await fetchBootstrap(overrides))
   } catch (fetchError) {
     error.value = fetchError.message
   } finally {
-    loading.value = false
+    if (silent) {
+      contentLoading.value = false
+    } else {
+      loading.value = false
+    }
   }
 }
 
@@ -664,10 +704,11 @@ async function handleSelectServerChannel(channelId) {
   }
 
   view.value = "server"
-  loading.value = true
+  setActiveServerChannelLocally(channelId)
+  contentLoading.value = true
 
   try {
-    bootstrap.value = await fetchBootstrap({ serverChannelId: channelId })
+    mergeBootstrap(await fetchBootstrap({ serverChannelId: channelId }))
     if (isServerChatOpen.value) {
       await markActiveServerChannelRead()
     }
@@ -675,7 +716,7 @@ async function handleSelectServerChannel(channelId) {
   } catch (fetchError) {
     error.value = fetchError.message
   } finally {
-    loading.value = false
+    contentLoading.value = false
   }
 }
 
@@ -691,16 +732,17 @@ async function handleSelectDm(threadId) {
   }
 
   view.value = "dm"
-  loading.value = true
+  setActiveDmThreadLocally(threadId)
+  contentLoading.value = true
 
   try {
-    bootstrap.value = await fetchBootstrap({ dmThreadId: threadId })
+    mergeBootstrap(await fetchBootstrap({ dmThreadId: threadId }))
     await markActiveDmThreadRead()
     error.value = ""
   } catch (fetchError) {
     error.value = fetchError.message
   } finally {
-    loading.value = false
+    contentLoading.value = false
   }
 }
 
@@ -718,19 +760,19 @@ async function handleSelectGuild(guildId) {
     return
   }
 
-  loading.value = true
+  contentLoading.value = true
   error.value = ""
 
   try {
-    bootstrap.value = await fetchBootstrap({
+    mergeBootstrap(await fetchBootstrap({
       guildId,
       serverChannelId: null,
       dmThreadId: null,
-    })
+    }))
   } catch (fetchError) {
     error.value = fetchError.message
   } finally {
-    loading.value = false
+    contentLoading.value = false
   }
 }
 
@@ -949,7 +991,7 @@ async function handleSendFriendRequest(username) {
       throw new Error(data.error || `Failed to send friend request (${response.status})`)
     }
 
-    await loadBootstrap()
+    await loadBootstrap({}, { silent: true })
     view.value = "dm"
     dmSection.value = "friends"
   } catch (requestError) {
@@ -968,7 +1010,7 @@ async function handleAcceptFriendRequest(requestId) {
       throw new Error(data.error || `Failed to accept request (${response.status})`)
     }
 
-    await loadBootstrap()
+    await loadBootstrap({}, { silent: true })
     view.value = "dm"
     dmSection.value = "friends"
   } catch (acceptError) {
@@ -991,7 +1033,7 @@ async function handleOpenDmWithFriend(friendUserId) {
       throw new Error(data.error || `Failed to open DM (${response.status})`)
     }
 
-    await loadBootstrap({ dmThreadId: data.threadId })
+    await loadBootstrap({ dmThreadId: data.threadId }, { silent: true })
     view.value = "dm"
     dmSection.value = "messages"
   } catch (dmError) {
@@ -1037,7 +1079,7 @@ async function acceptCall() {
     callError.value = ""
 
     if (activeDmThreadId.value !== nextIncomingCall.threadId) {
-      await loadBootstrap({ dmThreadId: nextIncomingCall.threadId })
+      await loadBootstrap({ dmThreadId: nextIncomingCall.threadId }, { silent: true })
       view.value = "dm"
       dmSection.value = "messages"
     }
@@ -1205,6 +1247,7 @@ onBeforeUnmount(() => {
       :incoming-call="incomingCall"
       :call-muted="callMuted"
       :current-user="currentUser"
+      :content-loading="contentLoading"
     />
     <Members
       :view="view"

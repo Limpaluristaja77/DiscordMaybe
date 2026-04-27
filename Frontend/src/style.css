@@ -566,6 +566,17 @@ input {
   min-height: 0;
 }
 
+.chat__loading {
+  align-self: center;
+  margin-bottom: 12px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(17, 18, 20, 0.76);
+  color: var(--muted);
+  font-size: 0.76rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
 .main--call .chat {
   padding-top: 24px;
   background: var(--panel-2);
