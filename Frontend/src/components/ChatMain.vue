@@ -37,6 +37,11 @@ const props = defineProps({
   sendFriendRequest: { type: Function, required: true },
   acceptFriendRequest: { type: Function, required: true },
   openDmWithFriend: { type: Function, required: true },
+  startCall: { type: Function, required: true },
+  acceptCall: { type: Function, required: true },
+  declineCall: { type: Function, required: true },
+  endCall: { type: Function, required: true },
+  toggleMute: { type: Function, required: true },
   view: { type: String, required: true },
   dmSection: { type: String, required: true },
   serverMessages: { type: Array, required: true },
@@ -47,12 +52,52 @@ const props = defineProps({
   incomingFriendRequests: { type: Array, required: true },
   outgoingFriendRequests: { type: Array, required: true },
   error: { type: String, default: "" },
+  callError: { type: String, default: "" },
+  callStatus: { type: String, required: true },
+  callThreadId: { type: String, default: null },
+  activeDmThreadId: { type: String, default: null },
+  incomingCall: { type: Object, default: null },
+  callMuted: { type: Boolean, required: true },
+  currentUser: { type: Object, required: true },
 })
 
 const activeMessages = computed(() =>
   props.view === "server" ? props.serverMessages : props.dmMessages
 )
 const isFriendsHub = computed(() => props.view === "dm" && props.dmSection === "friends")
+const isDmMessagesView = computed(() => props.view === "dm" && props.dmSection === "messages")
+const isCallForActiveThread = computed(
+  () => props.callThreadId && props.callThreadId === props.activeDmThreadId
+)
+const showIncomingCall = computed(
+  () => props.incomingCall?.threadId && props.incomingCall.threadId === props.activeDmThreadId
+)
+const canStartCall = computed(
+  () =>
+    isDmMessagesView.value &&
+    (!props.callThreadId || props.callThreadId === props.activeDmThreadId) &&
+    props.callStatus === "idle"
+)
+const showCallStage = computed(
+  () => isDmMessagesView.value && isCallForActiveThread.value && props.callStatus !== "idle"
+)
+const callStatusLabel = computed(() => {
+  const labels = {
+    incoming: "Incoming call",
+    calling: "Calling...",
+    connecting: "Connecting...",
+    active: "Voice connected",
+    idle: "",
+  }
+
+  return labels[props.callStatus] || ""
+})
+const remoteDisplayName = computed(
+  () => props.incomingCall?.fromUsername || props.dmTitle || "Friend"
+)
+const localDisplayName = computed(() => props.currentUser?.username || "You")
+const remoteInitial = computed(() => remoteDisplayName.value.slice(0, 1).toUpperCase())
+const localInitial = computed(() => localDisplayName.value.slice(0, 1).toUpperCase())
 
 async function scrollToBottom() {
   if (isFriendsHub.value) {
@@ -171,8 +216,8 @@ watch(
   { immediate: true }
 )
 
-watch(isFriendsHub, (nextValue) => {
-  if (nextValue) {
+watch([isFriendsHub, showCallStage], ([nextFriendsHub, nextShowCallStage]) => {
+  if (nextFriendsHub || nextShowCallStage) {
     draft.value = ""
     queuedFiles.value = []
   }
@@ -188,9 +233,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main class="main">
-    <header class="main__header">
-      <div class="channel-title">
+  <main class="main" :class="{ 'main--call': showCallStage }">
+    <header class="main__header" :class="{ 'main__header--call': showCallStage }">
+      <div class="channel-title" :class="{ 'channel-title--call': showCallStage }">
         <span class="channel-title__hash">
           {{ view === "server" ? "#" : dmSection === "friends" ? "FR" : "DM" }}
         </span>
@@ -204,9 +249,17 @@ onBeforeUnmount(() => {
           }}
         </span>
       </div>
-      <div class="header__actions">
-        <button class="icon-btn" title="Call">&#128222;</button>
-        <button class="icon-btn" title="Video">&#128249;</button>
+      <div class="header__actions" :class="{ 'header__actions--call': showCallStage }">
+        <button
+          class="icon-btn"
+          :class="{ 'icon-btn--active': showCallStage }"
+          :disabled="!canStartCall"
+          title="Call"
+          @click="startCall"
+        >
+          &#128222;
+        </button>
+        <button class="icon-btn" title="Video" disabled>&#128249;</button>
         <button class="icon-btn" title="Pins">&#128204;</button>
         <button class="icon-btn" title="Members">&#128101;</button>
         <button class="icon-btn" title="Search">&#128270;</button>
@@ -250,7 +303,7 @@ onBeforeUnmount(() => {
                 <div class="friend-row__avatar">{{ friend.username[0] }}</div>
                 <div>
                   <div class="friend-row__name">{{ friend.username }}</div>
-                  <div class="friend-row__meta">{{ friend.tag }} • {{ friend.status }}</div>
+                  <div class="friend-row__meta">{{ friend.tag }} - {{ friend.status }}</div>
                 </div>
               </div>
               <button class="auth-toggle__btn friend-row__action" @click="openDmWithFriend(friend.id)">
@@ -298,7 +351,7 @@ onBeforeUnmount(() => {
               <div class="friend-row__avatar">{{ request.username[0] }}</div>
               <div>
                 <div class="friend-row__name">{{ request.username }}</div>
-                <div class="friend-row__meta">{{ request.tag }} • waiting for reply</div>
+                <div class="friend-row__meta">{{ request.tag }} - waiting for reply</div>
               </div>
             </div>
             <span class="friend-row__status">Pending</span>
@@ -308,7 +361,107 @@ onBeforeUnmount(() => {
       </section>
     </section>
 
+    <section v-else-if="showCallStage" class="call-shell">
+      <section class="call-stage call-stage--embedded">
+        <div class="call-stage__center">
+          <div class="call-stage__avatar-stack">
+            <div class="call-stage__orb call-stage__orb--remote">{{ remoteInitial }}</div>
+            <div class="call-stage__orb call-stage__orb--local">{{ localInitial }}</div>
+          </div>
+          <div class="call-stage__caption">
+            {{ props.callStatus === "active" ? "You are in a voice call." : callStatusLabel }}
+          </div>
+          <div v-if="props.callError" class="auth-error">{{ props.callError }}</div>
+        </div>
+
+        <div class="call-stage__controls">
+          <div class="call-deck">
+            <button class="call-control" @click="toggleMute">
+              {{ callMuted ? "Unmute" : "Mute" }}
+            </button>
+            <button class="call-control call-control--chevron">&#709;</button>
+            <button class="call-control call-control--ghost">Noise</button>
+            <button class="call-control call-control--chevron">&#709;</button>
+          </div>
+          <div class="call-deck">
+            <button
+              v-if="showIncomingCall && callStatus === 'incoming'"
+              class="call-control call-control--accept"
+              @click="acceptCall"
+            >
+              Accept
+            </button>
+            <button v-else class="call-control call-control--ghost">Share</button>
+            <button
+              v-if="showIncomingCall && callStatus === 'incoming'"
+              class="call-control call-control--ghost"
+              @click="declineCall"
+            >
+              Decline
+            </button>
+            <button v-else class="call-control call-control--ghost">Effects</button>
+            <button
+              v-if="!showIncomingCall || callStatus !== 'incoming'"
+              class="call-control call-control--ghost"
+            >
+              More
+            </button>
+          </div>
+          <button class="call-control call-control--hangup" @click="endCall()">&#128222;</button>
+        </div>
+      </section>
+      <section ref="chatScroller" class="chat chat--with-call">
+        <div class="chat__intro">
+          <div class="chat__badge">{{ new Date().toLocaleDateString() }}</div>
+          <h1 class="chat__title">
+            {{ view === "server" ? serverChannelName : dmTitle }}
+          </h1>
+          <p class="chat__subtitle">This is the start of your conversation.</p>
+        </div>
+
+        <div
+          v-for="m in view === 'server' ? serverMessages : dmMessages"
+          :key="m.id"
+          class="message"
+        >
+          <div class="message__avatar">{{ m.user[0] }}</div>
+          <div class="message__body">
+            <div class="message__meta">
+              <span class="message__name">{{ m.user }}</span>
+              <span class="message__time">{{ m.time }}</span>
+            </div>
+            <div v-if="m.text" class="message__text">{{ m.text }}</div>
+            <img v-if="m.media" :src="m.media" class="message__media" alt="" />
+            <div v-if="m.attachments?.length" class="message__attachments">
+              <a
+                v-for="attachment in m.attachments"
+                :key="attachment.id"
+                class="message__attachment"
+                :href="attachment.url"
+                :download="attachment.fileName"
+                target="_blank"
+                rel="noreferrer"
+              >
+                &#128206; {{ attachment.fileName }}
+              </a>
+            </div>
+          </div>
+        </div>
+      </section>
+    </section>
+
     <section v-else ref="chatScroller" class="chat">
+      <div v-if="showIncomingCall && callStatus === 'incoming' && !showCallStage" class="call-banner">
+        <div>
+          <div class="call-banner__title">Incoming voice call</div>
+          <div class="call-banner__subtitle">{{ incomingCall?.fromUsername || dmTitle }} is calling.</div>
+        </div>
+        <div class="call-banner__actions">
+          <button class="auth-submit" @click="acceptCall">Accept</button>
+          <button class="auth-toggle__btn" @click="declineCall">Decline</button>
+        </div>
+      </div>
+
       <div class="chat__intro">
         <div class="chat__badge">{{ new Date().toLocaleDateString() }}</div>
         <h1 class="chat__title">

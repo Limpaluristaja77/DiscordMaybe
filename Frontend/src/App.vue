@@ -6,6 +6,10 @@ import ChatMain from "./components/ChatMain.vue"
 import Members from "./components/Members.vue"
 import AuthPanel from "./components/AuthPanel.vue"
 
+const RTC_CONFIGURATION = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+}
+
 const view = ref("server")
 const dmSection = ref("friends")
 const bootstrap = ref(null)
@@ -13,6 +17,12 @@ const loading = ref(true)
 const error = ref("")
 const socket = ref(null)
 const token = ref(localStorage.getItem("discordmaybe-token") || "")
+const callStatus = ref("idle")
+const callThreadId = ref(null)
+const callRole = ref(null)
+const callMuted = ref(false)
+const incomingCall = ref(null)
+const callError = ref("")
 
 const guilds = computed(() => bootstrap.value?.guilds || [])
 const serverChannels = computed(() => bootstrap.value?.serverChannels || [])
@@ -46,6 +56,12 @@ const serverChannelName = computed(
   () => serverChannels.value.find((channel) => channel.active)?.name || "general"
 )
 const isAuthenticated = computed(() => Boolean(token.value))
+
+let localStream = null
+let remoteStream = null
+let remoteAudio = null
+let peerConnection = null
+let pendingRemoteCandidates = []
 
 async function apiFetch(url, options = {}) {
   const headers = new Headers(options.headers || {})
@@ -87,7 +103,158 @@ function buildBootstrapQuery(overrides = {}) {
   return query
 }
 
+function attachRemoteStream(stream) {
+  remoteStream = stream
+
+  if (!remoteAudio) {
+    remoteAudio = new Audio()
+    remoteAudio.autoplay = true
+  }
+
+  remoteAudio.srcObject = stream
+  remoteAudio.play().catch(() => {})
+}
+
+function destroyPeerConnection() {
+  if (peerConnection) {
+    peerConnection.onicecandidate = null
+    peerConnection.ontrack = null
+    peerConnection.onconnectionstatechange = null
+    peerConnection.close()
+    peerConnection = null
+  }
+
+  pendingRemoteCandidates = []
+}
+
+function stopLocalStream() {
+  if (localStream) {
+    localStream.getTracks().forEach((track) => track.stop())
+    localStream = null
+  }
+}
+
+function stopRemoteStream() {
+  if (remoteAudio) {
+    remoteAudio.pause()
+    remoteAudio.srcObject = null
+  }
+
+  if (remoteStream) {
+    remoteStream.getTracks().forEach((track) => track.stop())
+    remoteStream = null
+  }
+}
+
+function resetCallState() {
+  callStatus.value = "idle"
+  callThreadId.value = null
+  callRole.value = null
+  callMuted.value = false
+  incomingCall.value = null
+}
+
+async function ensureLocalStream() {
+  if (localStream) {
+    return localStream
+  }
+
+  localStream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+    video: false,
+  })
+
+  localStream.getAudioTracks().forEach((track) => {
+    track.enabled = !callMuted.value
+  })
+
+  return localStream
+}
+
+function createPeerConnection(threadId) {
+  if (peerConnection) {
+    return peerConnection
+  }
+
+  const connection = new RTCPeerConnection(RTC_CONFIGURATION)
+
+  connection.onicecandidate = (event) => {
+    if (event.candidate && socket.value) {
+      socket.value.emit("webrtc:ice-candidate", {
+        threadId,
+        candidate: event.candidate,
+      })
+    }
+  }
+
+  connection.ontrack = (event) => {
+    const [stream] = event.streams
+
+    if (stream) {
+      attachRemoteStream(stream)
+      callStatus.value = "active"
+    }
+  }
+
+  connection.onconnectionstatechange = () => {
+    if (["disconnected", "failed", "closed"].includes(connection.connectionState)) {
+      if (callThreadId.value) {
+        endCall({ notifyPeer: false })
+      }
+    }
+  }
+
+  if (localStream) {
+    localStream.getTracks().forEach((track) => connection.addTrack(track, localStream))
+  }
+
+  peerConnection = connection
+  return connection
+}
+
+async function flushPendingIceCandidates() {
+  if (!peerConnection || !pendingRemoteCandidates.length) {
+    return
+  }
+
+  const queuedCandidates = [...pendingRemoteCandidates]
+  pendingRemoteCandidates = []
+
+  for (const candidate of queuedCandidates) {
+    await peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+  }
+}
+
+async function joinCallRoom(threadId) {
+  if (!socket.value) {
+    throw new Error("Realtime connection unavailable")
+  }
+
+  return new Promise((resolve, reject) => {
+    socket.value.emit("call:join", { threadId }, (response) => {
+      if (!response?.ok) {
+        reject(new Error(response?.error || "Failed to join call"))
+        return
+      }
+
+      resolve(response)
+    })
+  })
+}
+
+async function createAndSendOffer(threadId) {
+  const connection = createPeerConnection(threadId)
+  const offer = await connection.createOffer()
+  await connection.setLocalDescription(offer)
+  socket.value?.emit("webrtc:offer", {
+    threadId,
+    sdp: offer,
+  })
+  callStatus.value = "connecting"
+}
+
 function clearSession() {
+  endCall({ notifyPeer: true, clearIncoming: true })
   token.value = ""
   bootstrap.value = null
   dmSection.value = "friends"
@@ -140,6 +307,105 @@ async function ensureSocketClient() {
   return window.io
 }
 
+function registerRealtimeEvents(nextSocket) {
+  nextSocket.on("message:new", (message) => {
+    appendMessage(message)
+  })
+
+  nextSocket.on("call:incoming", ({ threadId, fromUsername }) => {
+    if (callThreadId.value === threadId) {
+      return
+    }
+
+    incomingCall.value = {
+      threadId,
+      fromUsername,
+    }
+
+    if (activeDmThreadId.value === threadId) {
+      callStatus.value = "incoming"
+    }
+  })
+
+  nextSocket.on("call:participant-joined", async ({ threadId }) => {
+    if (threadId !== callThreadId.value || callRole.value !== "caller") {
+      return
+    }
+
+    try {
+      if (!peerConnection || !peerConnection.localDescription) {
+        await createAndSendOffer(threadId)
+      }
+    } catch (participantError) {
+      callError.value = participantError.message
+    }
+  })
+
+  nextSocket.on("call:participant-left", ({ threadId }) => {
+    if (threadId === callThreadId.value) {
+      endCall({ notifyPeer: false })
+    }
+  })
+
+  nextSocket.on("webrtc:offer", async ({ threadId, sdp, fromUsername }) => {
+    if (threadId !== callThreadId.value) {
+      return
+    }
+
+    try {
+      const connection = createPeerConnection(threadId)
+      await connection.setRemoteDescription(new RTCSessionDescription(sdp))
+      await flushPendingIceCandidates()
+      const answer = await connection.createAnswer()
+      await connection.setLocalDescription(answer)
+      nextSocket.emit("webrtc:answer", {
+        threadId,
+        sdp: answer,
+      })
+      callStatus.value = "connecting"
+      if (!incomingCall.value) {
+        incomingCall.value = {
+          threadId,
+          fromUsername,
+        }
+      }
+    } catch (offerError) {
+      callError.value = offerError.message
+    }
+  })
+
+  nextSocket.on("webrtc:answer", async ({ threadId, sdp }) => {
+    if (threadId !== callThreadId.value || !peerConnection) {
+      return
+    }
+
+    try {
+      await peerConnection.setRemoteDescription(new RTCSessionDescription(sdp))
+      await flushPendingIceCandidates()
+      callStatus.value = "active"
+    } catch (answerError) {
+      callError.value = answerError.message
+    }
+  })
+
+  nextSocket.on("webrtc:ice-candidate", async ({ threadId, candidate }) => {
+    if (threadId !== callThreadId.value || !candidate) {
+      return
+    }
+
+    try {
+      if (!peerConnection || !peerConnection.remoteDescription) {
+        pendingRemoteCandidates.push(candidate)
+        return
+      }
+
+      await peerConnection.addIceCandidate(new RTCIceCandidate(candidate))
+    } catch (candidateError) {
+      callError.value = candidateError.message
+    }
+  })
+}
+
 async function connectRealtime() {
   if (!token.value) {
     return
@@ -159,10 +425,7 @@ async function connectRealtime() {
       },
     })
 
-    nextSocket.on("message:new", (message) => {
-      appendMessage(message)
-    })
-
+    registerRealtimeEvents(nextSocket)
     socket.value = nextSocket
   } catch (connectionError) {
     console.error("Failed to initialize realtime connection:", connectionError)
@@ -551,6 +814,99 @@ async function handleOpenDmWithFriend(friendUserId) {
   }
 }
 
+async function startCall() {
+  if (view.value !== "dm" || dmSection.value !== "messages" || !activeDmThreadId.value) {
+    return
+  }
+
+  if (callThreadId.value && callThreadId.value !== activeDmThreadId.value) {
+    callError.value = "Finish the current call before starting another one."
+    return
+  }
+
+  try {
+    callError.value = ""
+    await ensureLocalStream()
+    const threadId = activeDmThreadId.value
+    callThreadId.value = threadId
+    callRole.value = "caller"
+    callStatus.value = "calling"
+    incomingCall.value = null
+    createPeerConnection(threadId)
+    await joinCallRoom(threadId)
+    socket.value?.emit("call:invite", { threadId })
+  } catch (startError) {
+    callError.value = startError.message
+    endCall({ notifyPeer: false })
+  }
+}
+
+async function acceptCall() {
+  const nextIncomingCall = incomingCall.value
+
+  if (!nextIncomingCall?.threadId) {
+    return
+  }
+
+  try {
+    callError.value = ""
+
+    if (activeDmThreadId.value !== nextIncomingCall.threadId) {
+      await loadBootstrap({ dmThreadId: nextIncomingCall.threadId })
+      view.value = "dm"
+      dmSection.value = "messages"
+    }
+
+    await ensureLocalStream()
+    callThreadId.value = nextIncomingCall.threadId
+    callRole.value = "callee"
+    callStatus.value = "connecting"
+    createPeerConnection(nextIncomingCall.threadId)
+    await joinCallRoom(nextIncomingCall.threadId)
+    incomingCall.value = null
+  } catch (acceptError) {
+    callError.value = acceptError.message
+    endCall({ notifyPeer: false })
+  }
+}
+
+function declineCall() {
+  incomingCall.value = null
+
+  if (callStatus.value === "incoming") {
+    callStatus.value = "idle"
+  }
+}
+
+function endCall({ notifyPeer = true, clearIncoming = true } = {}) {
+  const threadId = callThreadId.value
+
+  if (notifyPeer && socket.value && threadId) {
+    socket.value.emit("call:leave", { threadId })
+  }
+
+  destroyPeerConnection()
+  stopLocalStream()
+  stopRemoteStream()
+  resetCallState()
+
+  if (!clearIncoming) {
+    return
+  }
+
+  incomingCall.value = null
+}
+
+function toggleMute() {
+  callMuted.value = !callMuted.value
+
+  if (localStream) {
+    localStream.getAudioTracks().forEach((track) => {
+      track.enabled = !callMuted.value
+    })
+  }
+}
+
 watch(activeServerChannelId, (nextId, previousId) => {
   if (!socket.value) {
     return
@@ -577,6 +933,10 @@ watch(activeDmThreadId, (nextId, previousId) => {
   if (nextId) {
     socket.value.emit("thread:join", nextId)
   }
+
+  if (incomingCall.value?.threadId === nextId && callStatus.value === "idle") {
+    callStatus.value = "incoming"
+  }
 })
 
 onMounted(async () => {
@@ -591,6 +951,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  endCall({ notifyPeer: true })
   socket.value?.disconnect()
 })
 </script>
@@ -629,6 +990,11 @@ onBeforeUnmount(() => {
       :send-friend-request="handleSendFriendRequest"
       :accept-friend-request="handleAcceptFriendRequest"
       :open-dm-with-friend="handleOpenDmWithFriend"
+      :start-call="startCall"
+      :accept-call="acceptCall"
+      :decline-call="declineCall"
+      :end-call="endCall"
+      :toggle-mute="toggleMute"
       :view="view"
       :dm-section="dmSection"
       :server-messages="serverMessages"
@@ -639,6 +1005,13 @@ onBeforeUnmount(() => {
       :incoming-friend-requests="incomingFriendRequests"
       :outgoing-friend-requests="outgoingFriendRequests"
       :error="error"
+      :call-error="callError"
+      :call-status="callStatus"
+      :call-thread-id="callThreadId"
+      :active-dm-thread-id="activeDmThreadId"
+      :incoming-call="incomingCall"
+      :call-muted="callMuted"
+      :current-user="currentUser"
     />
     <Members
       :view="view"
