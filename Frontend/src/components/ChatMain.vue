@@ -100,6 +100,38 @@ const localDisplayName = computed(() => props.currentUser?.username || "You")
 const remoteInitial = computed(() => remoteDisplayName.value.slice(0, 1).toUpperCase())
 const localInitial = computed(() => localDisplayName.value.slice(0, 1).toUpperCase())
 
+function isImageAttachment(attachment) {
+  return attachment?.mimeType?.startsWith("image/")
+}
+
+function isVideoAttachment(attachment) {
+  return attachment?.mimeType?.startsWith("video/")
+}
+
+function getInlineAttachments(message) {
+  return (message.attachments || []).filter(
+    (attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment)
+  )
+}
+
+function getDownloadAttachments(message) {
+  return (message.attachments || []).filter(
+    (attachment) => !isImageAttachment(attachment) && !isVideoAttachment(attachment)
+  )
+}
+
+function getQueuedFileLabel(file) {
+  if (file.type?.startsWith("video/")) {
+    return "Video"
+  }
+
+  if (file.type?.startsWith("image/")) {
+    return "Image"
+  }
+
+  return "File"
+}
+
 async function scrollToBottom() {
   if (isFriendsHub.value) {
     return
@@ -433,10 +465,27 @@ onBeforeUnmount(() => {
               <span class="message__time">{{ m.time }}</span>
             </div>
             <div v-if="m.text" class="message__text">{{ m.text }}</div>
-            <img v-if="m.media" :src="m.media" class="message__media" alt="" />
-            <div v-if="m.attachments?.length" class="message__attachments">
+            <div v-if="getInlineAttachments(m).length" class="message__media-stack">
+              <template v-for="attachment in getInlineAttachments(m)" :key="attachment.id">
+                <img
+                  v-if="isImageAttachment(attachment)"
+                  :src="attachment.url"
+                  class="message__media"
+                  :alt="attachment.fileName"
+                />
+                <video
+                  v-else
+                  class="message__media message__media--video"
+                  controls
+                  preload="metadata"
+                >
+                  <source :src="attachment.url" :type="attachment.mimeType || undefined" />
+                </video>
+              </template>
+            </div>
+            <div v-if="getDownloadAttachments(m).length" class="message__attachments">
               <a
-                v-for="attachment in m.attachments"
+                v-for="attachment in getDownloadAttachments(m)"
                 :key="attachment.id"
                 class="message__attachment"
                 :href="attachment.url"
@@ -485,10 +534,27 @@ onBeforeUnmount(() => {
             <span class="message__time">{{ m.time }}</span>
           </div>
           <div v-if="m.text" class="message__text">{{ m.text }}</div>
-          <img v-if="m.media" :src="m.media" class="message__media" alt="" />
-          <div v-if="m.attachments?.length" class="message__attachments">
+          <div v-if="getInlineAttachments(m).length" class="message__media-stack">
+            <template v-for="attachment in getInlineAttachments(m)" :key="attachment.id">
+              <img
+                v-if="isImageAttachment(attachment)"
+                :src="attachment.url"
+                class="message__media"
+                :alt="attachment.fileName"
+              />
+              <video
+                v-else
+                class="message__media message__media--video"
+                controls
+                preload="metadata"
+              >
+                <source :src="attachment.url" :type="attachment.mimeType || undefined" />
+              </video>
+            </template>
+          </div>
+          <div v-if="getDownloadAttachments(m).length" class="message__attachments">
             <a
-              v-for="attachment in m.attachments"
+              v-for="attachment in getDownloadAttachments(m)"
               :key="attachment.id"
               class="message__attachment"
               :href="attachment.url"
@@ -530,7 +596,7 @@ onBeforeUnmount(() => {
             class="composer__file-chip"
             @click="removeQueuedFile(index)"
           >
-            &#128206; {{ file.name }}
+            &#128206; {{ getQueuedFileLabel(file) }}: {{ file.name }}
           </button>
         </div>
         <button class="icon-btn" title="GIF">&#127909;</button>
